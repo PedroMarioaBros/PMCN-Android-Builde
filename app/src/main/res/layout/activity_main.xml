@@ -21,7 +21,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="Extrai somente a legenda/transcrição que já existe no YouTube. Não transcreve áudio, não traduz e não baixa o vídeo."
+            android:text="Transcrição + contexto completo para análise. Não transcreve áudio, não traduz e não baixa o vídeo."
             android:textSize="15sp" />
 
         <EditText
@@ -38,7 +38,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:text="Buscar transcrições disponíveis" />
+            android:text="Buscar dados e transcrições" />
 
         <ProgressBar
             android:id="@+id/progress"
@@ -57,13 +57,50 @@
             android:text="Preparando..."
             android:textSize="14sp" />
 
+        <ImageView
+            android:id="@+id/thumbnailView"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:layout_marginTop="18dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="Capa do vídeo"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/videoTitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:textSize="18sp"
+            android:layout_marginTop="14dp"
+            android:textSize="20sp"
             android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/metaText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/descriptionLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Descrição do vídeo"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/descriptionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textIsSelectable="true"
+            android:textSize="14sp"
             android:visibility="gone" />
 
         <TextView
@@ -71,7 +108,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            android:text="Escolha a faixa:"
+            android:text="Escolha a transcrição:"
             android:textSize="16sp"
             android:textStyle="bold"
             android:visibility="gone" />
@@ -89,7 +126,15 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
             android:enabled="false"
-            android:text="Baixar somente a transcrição (.VTT)" />
+            android:text="Salvar apenas a transcrição (.VTT)" />
+
+        <Button
+            android:id="@+id/exportPackageButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:enabled="false"
+            android:text="Gerar pacote completo para análise (.ZIP)" />
 
         <LinearLayout
             android:id="@+id/resultButtons"
@@ -104,7 +149,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Salvar .VTT" />
+                android:text="Salvar VTT" />
 
             <Button
                 android:id="@+id/shareButton"
@@ -112,11 +157,43 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:text="Compartilhar" />
+                android:text="Compartilhar VTT" />
         </LinearLayout>
 
         <TextView
             android:id="@+id/resultInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/packageButtons"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/savePackageButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Salvar ZIP" />
+
+            <Button
+                android:id="@+id/sharePackageButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="Compartilhar ZIP" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/packageInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
