@@ -1,22 +1,10 @@
 name: Runner Probe
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  ubuntu2204:
+  probe:
     runs-on: ubuntu-22.04
     steps:
-      - run: echo "UBUNTU_2204_OK"
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - run: echo "WINDOWS_OK"
-
-  macos:
-    runs-on: macos-latest
-    steps:
-      - run: echo "MACOS_OK"
+      - run: echo "PMCN_RUNNER_OK"
