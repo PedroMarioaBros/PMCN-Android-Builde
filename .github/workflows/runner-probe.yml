@@ -6,10 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  probe:
-    runs-on: ubuntu-latest
+  ubuntu2204:
+    runs-on: ubuntu-22.04
     steps:
-      - name: Prove runner works
-        run: |
-          echo "PMCN_RUNNER_OK"
-          uname -a
+      - run: echo "UBUNTU_2204_OK"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - run: echo "WINDOWS_OK"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - run: echo "MACOS_OK"
