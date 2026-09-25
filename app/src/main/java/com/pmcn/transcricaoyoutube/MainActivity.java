@@ -1,5 +1,6 @@
 package com.pmcn.transcricaoyoutube;
 
+import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -7,12 +8,14 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -20,7 +23,10 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.FileProvider;
+import androidx.documentfile.provider.DocumentFile;
 
+import com.google.android.material.button.MaterialButton;
+import com.yausername.ffmpeg.FFmpeg;
 import com.yausername.youtubedl_android.YoutubeDL;
 import com.yausername.youtubedl_android.YoutubeDLRequest;
 
@@ -32,9 +38,9 @@ import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -44,10 +50,11 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.TimeZone;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -57,42 +64,78 @@ import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final int MODE_ANALYZE = 0;
+    private static final int MODE_VIDEO = 1;
+    private static final int MODE_AUDIO = 2;
+    private static final int MODE_BATCH = 3;
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final List<CaptionTrack> tracks = new ArrayList<>();
 
     private EditText urlInput;
+    private EditText batchInput;
+    private MaterialButton modeAnalyze;
+    private MaterialButton modeVideo;
+    private MaterialButton modeAudio;
+    private MaterialButton modeBatch;
+    private View urlCard;
+    private View analyzePanel;
+    private View videoPanel;
+    private View audioPanel;
+    private View batchPanel;
+    private View videoInfoCard;
+    private View mediaResultCard;
+    private View vttResultButtons;
+    private View packageResultButtons;
     private Button analyzeButton;
     private Button extractButton;
     private Button exportPackageButton;
-    private Button saveButton;
-    private Button shareButton;
+    private Button saveVttButton;
+    private Button shareVttButton;
     private Button savePackageButton;
     private Button sharePackageButton;
+    private Button downloadVideoButton;
+    private Button downloadAudioButton;
+    private Button saveMediaButton;
+    private Button shareMediaButton;
+    private Button processBatchButton;
     private ProgressBar progress;
     private TextView statusText;
     private TextView videoTitle;
     private TextView metaText;
-    private TextView descriptionLabel;
     private TextView descriptionText;
     private TextView tracksLabel;
-    private TextView resultInfo;
-    private TextView packageInfo;
+    private TextView vttResultInfo;
+    private TextView packageResultInfo;
+    private TextView mediaResultInfo;
+    private TextView batchResultInfo;
     private RadioGroup tracksGroup;
     private ImageView thumbnailView;
-    private View resultButtons;
-    private View packageButtons;
+    private Spinner videoQualitySpinner;
+    private Spinner audioFormatSpinner;
+    private Spinner batchTypeSpinner;
+    private Spinner batchFormatSpinner;
 
     private boolean engineReady = false;
+    private boolean busy = false;
+    private int currentMode = MODE_ANALYZE;
+
     private String currentUrl;
-    private String currentTitle;
     private JSONObject currentInfo;
+    private CaptionTrack selectedTrack;
     private File currentVtt;
     private File currentPackageZip;
-    private CaptionTrack selectedTrack;
+    private File currentMediaFile;
+    private String currentMediaMime = "application/octet-stream";
+    private boolean currentMediaIsVideo = true;
+
+    private String pendingBatchText;
+    private int pendingBatchType;
+    private String pendingBatchFormat;
 
     private final ActivityResultLauncher<String> vttSaveLauncher =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("text/vtt"), uri -> {
-                if (uri != null && currentVtt != null) copyToUri(currentVtt, uri, "Arquivo VTT salvo.");
+                if (uri != null && currentVtt != null) copyToUri(currentVtt, uri, "Transcrição salva.");
             });
 
     private final ActivityResultLauncher<String> zipSaveLauncher =
@@ -100,12 +143,39 @@ public class MainActivity extends AppCompatActivity {
                 if (uri != null && currentPackageZip != null) copyToUri(currentPackageZip, uri, "Pacote ZIP salvo.");
             });
 
+    private final ActivityResultLauncher<String> videoSaveLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("video/*"), uri -> {
+                if (uri != null && currentMediaFile != null) copyToUri(currentMediaFile, uri, "Vídeo salvo.");
+            });
+
+    private final ActivityResultLauncher<String> audioSaveLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("audio/*"), uri -> {
+                if (uri != null && currentMediaFile != null) copyToUri(currentMediaFile, uri, "Áudio salvo.");
+            });
+
+    private final ActivityResultLauncher<Uri> batchFolderLauncher =
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), uri -> {
+                if (uri == null) {
+                    setStatus("Seleção de pasta cancelada.");
+                    return;
+                }
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    );
+                } catch (Exception ignored) { }
+                processBatchMedia(uri);
+            });
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         bindViews();
+        setupSpinners();
         bindActions();
+        showMode(MODE_ANALYZE);
         initializeEngine();
         handleIncomingShare(getIntent());
     }
@@ -119,118 +189,182 @@ public class MainActivity extends AppCompatActivity {
 
     private void bindViews() {
         urlInput = findViewById(R.id.urlInput);
+        batchInput = findViewById(R.id.batchInput);
+        modeAnalyze = findViewById(R.id.modeAnalyze);
+        modeVideo = findViewById(R.id.modeVideo);
+        modeAudio = findViewById(R.id.modeAudio);
+        modeBatch = findViewById(R.id.modeBatch);
+        urlCard = findViewById(R.id.urlCard);
+        analyzePanel = findViewById(R.id.analyzePanel);
+        videoPanel = findViewById(R.id.videoPanel);
+        audioPanel = findViewById(R.id.audioPanel);
+        batchPanel = findViewById(R.id.batchPanel);
+        videoInfoCard = findViewById(R.id.videoInfoCard);
+        mediaResultCard = findViewById(R.id.mediaResultCard);
+        vttResultButtons = findViewById(R.id.vttResultButtons);
+        packageResultButtons = findViewById(R.id.packageResultButtons);
         analyzeButton = findViewById(R.id.analyzeButton);
         extractButton = findViewById(R.id.extractButton);
         exportPackageButton = findViewById(R.id.exportPackageButton);
-        saveButton = findViewById(R.id.saveButton);
-        shareButton = findViewById(R.id.shareButton);
+        saveVttButton = findViewById(R.id.saveVttButton);
+        shareVttButton = findViewById(R.id.shareVttButton);
         savePackageButton = findViewById(R.id.savePackageButton);
         sharePackageButton = findViewById(R.id.sharePackageButton);
+        downloadVideoButton = findViewById(R.id.downloadVideoButton);
+        downloadAudioButton = findViewById(R.id.downloadAudioButton);
+        saveMediaButton = findViewById(R.id.saveMediaButton);
+        shareMediaButton = findViewById(R.id.shareMediaButton);
+        processBatchButton = findViewById(R.id.processBatchButton);
         progress = findViewById(R.id.progress);
         statusText = findViewById(R.id.statusText);
         videoTitle = findViewById(R.id.videoTitle);
         metaText = findViewById(R.id.metaText);
-        descriptionLabel = findViewById(R.id.descriptionLabel);
         descriptionText = findViewById(R.id.descriptionText);
         tracksLabel = findViewById(R.id.tracksLabel);
-        resultInfo = findViewById(R.id.resultInfo);
-        packageInfo = findViewById(R.id.packageInfo);
+        vttResultInfo = findViewById(R.id.vttResultInfo);
+        packageResultInfo = findViewById(R.id.packageResultInfo);
+        mediaResultInfo = findViewById(R.id.mediaResultInfo);
+        batchResultInfo = findViewById(R.id.batchResultInfo);
         tracksGroup = findViewById(R.id.tracksGroup);
         thumbnailView = findViewById(R.id.thumbnailView);
-        resultButtons = findViewById(R.id.resultButtons);
-        packageButtons = findViewById(R.id.packageButtons);
+        videoQualitySpinner = findViewById(R.id.videoQualitySpinner);
+        audioFormatSpinner = findViewById(R.id.audioFormatSpinner);
+        batchTypeSpinner = findViewById(R.id.batchTypeSpinner);
+        batchFormatSpinner = findViewById(R.id.batchFormatSpinner);
+    }
+
+    private void setupSpinners() {
+        setSpinnerItems(videoQualitySpinner, videoQualityLabels());
+        setSpinnerItems(audioFormatSpinner, audioFormatLabels());
+        setSpinnerItems(batchTypeSpinner, new String[]{
+                "Pacote completo para análise",
+                "Baixar vídeos",
+                "Baixar áudios"
+        });
+        updateBatchFormatSpinner(0);
+
+        batchTypeSpinner.setOnItemSelectedListener(new SimpleItemSelectedListener(position ->
+                updateBatchFormatSpinner(position)
+        ));
     }
 
     private void bindActions() {
+        modeAnalyze.setOnClickListener(v -> showMode(MODE_ANALYZE));
+        modeVideo.setOnClickListener(v -> showMode(MODE_VIDEO));
+        modeAudio.setOnClickListener(v -> showMode(MODE_AUDIO));
+        modeBatch.setOnClickListener(v -> showMode(MODE_BATCH));
+
         analyzeButton.setOnClickListener(v -> analyze());
-        extractButton.setOnClickListener(v -> extractSelected());
+        extractButton.setOnClickListener(v -> extractSelectedVtt());
         exportPackageButton.setOnClickListener(v -> exportAnalysisPackage());
-        saveButton.setOnClickListener(v -> {
+
+        saveVttButton.setOnClickListener(v -> {
             if (currentVtt != null) vttSaveLauncher.launch(currentVtt.getName());
         });
-        shareButton.setOnClickListener(v -> {
+        shareVttButton.setOnClickListener(v -> {
             if (currentVtt != null) shareFile(currentVtt, "text/vtt", "Compartilhar transcrição");
         });
+
         savePackageButton.setOnClickListener(v -> {
             if (currentPackageZip != null) zipSaveLauncher.launch(currentPackageZip.getName());
         });
         sharePackageButton.setOnClickListener(v -> {
             if (currentPackageZip != null) shareFile(currentPackageZip, "application/zip", "Compartilhar pacote para análise");
         });
+
+        downloadVideoButton.setOnClickListener(v -> startSingleMediaDownload(true));
+        downloadAudioButton.setOnClickListener(v -> startSingleMediaDownload(false));
+
+        saveMediaButton.setOnClickListener(v -> {
+            if (currentMediaFile == null) return;
+            if (currentMediaIsVideo) videoSaveLauncher.launch(currentMediaFile.getName());
+            else audioSaveLauncher.launch(currentMediaFile.getName());
+        });
+        shareMediaButton.setOnClickListener(v -> {
+            if (currentMediaFile != null) shareFile(currentMediaFile, currentMediaMime, "Compartilhar arquivo");
+        });
+
+        processBatchButton.setOnClickListener(v -> startBatch());
     }
 
     private void initializeEngine() {
-        setBusy(true, "Preparando o mecanismo...");
+        setBusy(true, "Preparando yt-dlp e FFmpeg...");
         executor.submit(() -> {
             try {
                 YoutubeDL.getInstance().init(getApplicationContext());
+                FFmpeg.getInstance().init(getApplicationContext());
                 engineReady = true;
                 runOnUiThread(() -> {
-                    setBusy(false, "Pronto. Cole um link ou compartilhe um vídeo do YouTube.");
+                    setBusy(false, "Pronto para analisar e baixar.");
                     maybeAutoAnalyze();
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> showError("Falha ao iniciar o mecanismo: " + e.getMessage()));
+                runOnUiThread(() -> showError("Falha ao iniciar o mecanismo: " + safeMessage(e)));
             }
         });
+    }
+
+    private void showMode(int mode) {
+        currentMode = mode;
+        analyzePanel.setVisibility(mode == MODE_ANALYZE ? View.VISIBLE : View.GONE);
+        videoPanel.setVisibility(mode == MODE_VIDEO ? View.VISIBLE : View.GONE);
+        audioPanel.setVisibility(mode == MODE_AUDIO ? View.VISIBLE : View.GONE);
+        batchPanel.setVisibility(mode == MODE_BATCH ? View.VISIBLE : View.GONE);
+        urlCard.setVisibility(mode == MODE_BATCH ? View.GONE : View.VISIBLE);
+        mediaResultCard.setVisibility((mode == MODE_VIDEO || mode == MODE_AUDIO) && currentMediaFile != null
+                ? View.VISIBLE : View.GONE);
     }
 
     private void handleIncomingShare(Intent intent) {
         if (intent == null) return;
         if (Intent.ACTION_SEND.equals(intent.getAction()) && "text/plain".equals(intent.getType())) {
             String text = intent.getStringExtra(Intent.EXTRA_TEXT);
-            String url = extractYoutubeUrl(text);
+            String url = extractFirstUrl(text);
             if (url != null) {
                 urlInput.setText(url);
+                showMode(MODE_ANALYZE);
+                modeAnalyze.setChecked(true);
                 maybeAutoAnalyze();
             }
         }
     }
 
     private void maybeAutoAnalyze() {
-        if (engineReady && !TextUtils.isEmpty(urlInput.getText().toString().trim())) analyze();
+        if (engineReady && currentMode == MODE_ANALYZE && !TextUtils.isEmpty(urlInput.getText())) analyze();
     }
 
-    private String extractYoutubeUrl(String text) {
-        if (text == null) return null;
-        Pattern p = Pattern.compile("https?://(?:www\\.)?(?:youtube\\.com/[^\\s]+|youtu\\.be/[^\\s]+)", Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(text);
-        return m.find() ? m.group() : null;
+    private String requireSingleUrl() {
+        String text = urlInput.getText() == null ? "" : urlInput.getText().toString().trim();
+        String url = extractFirstUrl(text);
+        if (url == null) {
+            urlInput.setError("Cole um link válido.");
+            return null;
+        }
+        return url;
     }
 
     private void analyze() {
-        if (!engineReady) {
-            Toast.makeText(this, "O mecanismo ainda está iniciando.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        String url = urlInput.getText().toString().trim();
-        if (url.isEmpty()) {
-            urlInput.setError("Cole um link do YouTube.");
-            return;
-        }
+        if (!engineReady || busy) return;
+        String url = requireSingleUrl();
+        if (url == null) return;
 
         currentUrl = url;
+        currentInfo = null;
         currentVtt = null;
         currentPackageZip = null;
-        currentInfo = null;
         selectedTrack = null;
         tracks.clear();
         tracksGroup.removeAllViews();
-        hideResults();
-        setBusy(true, "Buscando título, capa, descrição, metadados e transcrições...");
+        hideAnalysisResults();
+        setBusy(true, "Buscando capa, título, descrição e transcrições...");
 
         executor.submit(() -> {
             try {
                 JSONObject info = getVideoJson(url);
-                currentInfo = info;
-                currentTitle = info.optString("title", "Vídeo do YouTube");
                 List<CaptionTrack> parsed = parseTracks(info);
-                runOnUiThread(() -> {
-                    renderVideoDetails(info);
-                    renderTracks(parsed);
-                });
-                loadThumbnail(info.optString("thumbnail", ""), url);
+                currentInfo = info;
+                runOnUiThread(() -> renderVideoDetails(info, parsed));
+                loadThumbnailPreview(info.optString("thumbnail", ""), url);
             } catch (Exception e) {
                 runOnUiThread(() -> showError(friendlyError(e)));
             }
@@ -244,21 +378,21 @@ public class MainActivity extends AppCompatActivity {
         request.addOption("--no-warnings");
         request.addOption("--quiet");
         request.addOption("--dump-single-json");
-
         String out = YoutubeDL.getInstance().execute(request).getOut();
-        if (out == null) throw new IllegalStateException("Resposta vazia do YouTube.");
+        return jsonFromOutput(out, "Não foi possível interpretar as informações do vídeo.");
+    }
 
+    private JSONObject jsonFromOutput(String out, String error) throws Exception {
+        if (out == null) throw new IllegalStateException(error);
         int start = out.indexOf('{');
         int end = out.lastIndexOf('}');
-        if (start < 0 || end <= start) {
-            throw new IllegalStateException("Não foi possível interpretar as informações do vídeo.");
-        }
+        if (start < 0 || end <= start) throw new IllegalStateException(error);
         return new JSONObject(out.substring(start, end + 1));
     }
 
-    private void renderVideoDetails(JSONObject info) {
+    private void renderVideoDetails(JSONObject info, List<CaptionTrack> parsed) {
+        videoInfoCard.setVisibility(View.VISIBLE);
         videoTitle.setText(info.optString("title", "Vídeo do YouTube"));
-        videoTitle.setVisibility(View.VISIBLE);
 
         StringBuilder meta = new StringBuilder();
         appendMeta(meta, "Canal", firstNonEmpty(info.optString("channel", ""), info.optString("uploader", "")));
@@ -267,141 +401,38 @@ public class MainActivity extends AppCompatActivity {
         appendMeta(meta, "Visualizações", formatNumber(info.optLong("view_count", -1)));
         appendMeta(meta, "Curtidas", formatNumber(info.optLong("like_count", -1)));
         appendMeta(meta, "Comentários", formatNumber(info.optLong("comment_count", -1)));
-        appendMeta(meta, "ID", info.optString("id", ""));
-
         metaText.setText(meta.toString().trim());
-        metaText.setVisibility(meta.length() > 0 ? View.VISIBLE : View.GONE);
 
         String description = info.optString("description", "");
-        descriptionLabel.setVisibility(View.VISIBLE);
         descriptionText.setText(description.isEmpty() ? "(Sem descrição disponível)" : description);
-        descriptionText.setVisibility(View.VISIBLE);
-    }
 
-    private void loadThumbnail(String thumbnailUrl, String expectedUrl) {
-        if (thumbnailUrl == null || thumbnailUrl.isEmpty()) return;
-
-        executor.submit(() -> {
-            try (InputStream input = new BufferedInputStream(new URL(thumbnailUrl).openStream())) {
-                Bitmap bitmap = BitmapFactory.decodeStream(input);
-                if (bitmap != null) {
-                    runOnUiThread(() -> {
-                        if (expectedUrl.equals(currentUrl)) {
-                            thumbnailView.setImageBitmap(bitmap);
-                            thumbnailView.setVisibility(View.VISIBLE);
-                        }
-                    });
-                }
-            } catch (Exception ignored) {
-                // A ausência da prévia não impede a extração do pacote.
-            }
-        });
-    }
-
-    private List<CaptionTrack> parseTracks(JSONObject info) {
-        Map<String, CaptionTrack> unique = new LinkedHashMap<>();
-
-        JSONObject manual = info.optJSONObject("subtitles");
-        if (manual != null) addManualTracks(manual, unique);
-
-        JSONObject automatic = info.optJSONObject("automatic_captions");
-        if (automatic != null) addOriginalAutomaticTracks(automatic, unique, info.optString("language", ""));
-
-        List<CaptionTrack> out = new ArrayList<>(unique.values());
-        Collections.sort(out, Comparator
-                .comparing((CaptionTrack t) -> !t.isPortuguese())
-                .thenComparing(t -> t.automatic)
-                .thenComparing(t -> t.code.toLowerCase(Locale.ROOT)));
-        return out;
-    }
-
-    private void addManualTracks(JSONObject obj, Map<String, CaptionTrack> out) {
-        Iterator<String> keys = obj.keys();
-        while (keys.hasNext()) {
-            String code = keys.next();
-            JSONArray formats = obj.optJSONArray(code);
-            if (!hasAnyFormat(formats)) continue;
-            out.put("manual:" + code, new CaptionTrack(code, "Legenda enviada pelo canal", false));
-        }
-    }
-
-    private void addOriginalAutomaticTracks(JSONObject obj, Map<String, CaptionTrack> out, String videoLanguage) {
-        List<String> allCodes = new ArrayList<>();
-        Iterator<String> keys = obj.keys();
-        while (keys.hasNext()) allCodes.add(keys.next());
-
-        boolean hasOrig = false;
-        for (String code : allCodes) {
-            if (code.endsWith("-orig")) {
-                hasOrig = true;
-                break;
-            }
-        }
-
-        if (hasOrig) {
-            for (String code : allCodes) {
-                if (!code.endsWith("-orig")) continue;
-                JSONArray formats = obj.optJSONArray(code);
-                if (!hasAnyFormat(formats)) continue;
-                out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática original do YouTube", true));
-            }
-            return;
-        }
-
-        if (videoLanguage != null && !videoLanguage.trim().isEmpty()) {
-            for (String code : allCodes) {
-                if (!code.equalsIgnoreCase(videoLanguage)) continue;
-                JSONArray formats = obj.optJSONArray(code);
-                if (!hasAnyFormat(formats)) continue;
-                out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática original do YouTube", true));
-            }
-            if (!out.isEmpty()) return;
-        }
-
-        for (String code : allCodes) {
-            String low = code.toLowerCase(Locale.ROOT);
-            if (!(low.equals("pt") || low.startsWith("pt-"))) continue;
-            JSONArray formats = obj.optJSONArray(code);
-            if (!hasAnyFormat(formats)) continue;
-            out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática do YouTube", true));
-        }
-    }
-
-    private boolean hasAnyFormat(JSONArray formats) {
-        return formats != null && formats.length() > 0;
+        renderTracks(parsed);
     }
 
     private void renderTracks(List<CaptionTrack> parsed) {
-        setBusy(false, parsed.isEmpty()
-                ? "Este vídeo não possui uma transcrição disponível no YouTube."
-                : "Dados carregados. Transcrições encontradas: " + parsed.size());
-
-        tracksLabel.setVisibility(parsed.isEmpty() ? View.GONE : View.VISIBLE);
-        tracksGroup.removeAllViews();
         tracks.clear();
         tracks.addAll(parsed);
+        tracksGroup.removeAllViews();
 
         if (parsed.isEmpty()) {
+            tracksLabel.setVisibility(View.GONE);
+            selectedTrack = null;
             extractButton.setEnabled(false);
-            exportPackageButton.setEnabled(false);
+            exportPackageButton.setEnabled(true);
+            setBusy(false, "Dados carregados. Este vídeo não possui transcrição disponível no YouTube.");
             return;
         }
 
-        int defaultIndex = 0;
-        for (int i = 0; i < parsed.size(); i++) {
-            if (parsed.get(i).isPortuguese()) {
-                defaultIndex = i;
-                break;
-            }
-        }
+        tracksLabel.setVisibility(View.VISIBLE);
+        int defaultIndex = preferredTrackIndex(parsed);
 
         for (int i = 0; i < parsed.size(); i++) {
-            CaptionTrack t = parsed.get(i);
+            CaptionTrack track = parsed.get(i);
             RadioButton rb = new RadioButton(this);
             rb.setId(View.generateViewId());
-            rb.setText(t.displayName());
             rb.setTag(i);
-            rb.setPadding(0, 8, 0, 8);
+            rb.setText(track.displayName());
+            rb.setPadding(0, 7, 0, 7);
             tracksGroup.addView(rb);
             if (i == defaultIndex) rb.setChecked(true);
         }
@@ -416,39 +447,114 @@ public class MainActivity extends AppCompatActivity {
                 selectedTrack = tracks.get((Integer) rb.getTag());
                 currentVtt = null;
                 currentPackageZip = null;
-                resultButtons.setVisibility(View.GONE);
-                resultInfo.setVisibility(View.GONE);
-                packageButtons.setVisibility(View.GONE);
-                packageInfo.setVisibility(View.GONE);
+                vttResultButtons.setVisibility(View.GONE);
+                vttResultInfo.setVisibility(View.GONE);
+                packageResultButtons.setVisibility(View.GONE);
+                packageResultInfo.setVisibility(View.GONE);
             }
         });
+
+        setBusy(false, "Dados carregados. Escolha uma transcrição ou gere o pacote completo.");
     }
 
-    private void extractSelected() {
-        if (selectedTrack == null || currentUrl == null) return;
+    private List<CaptionTrack> parseTracks(JSONObject info) {
+        Map<String, CaptionTrack> unique = new LinkedHashMap<>();
 
-        setBusy(true, "Baixando somente a faixa " + selectedTrack.code + " em VTT...");
-        resultButtons.setVisibility(View.GONE);
-        resultInfo.setVisibility(View.GONE);
+        JSONObject manual = info.optJSONObject("subtitles");
+        if (manual != null) {
+            Iterator<String> keys = manual.keys();
+            while (keys.hasNext()) {
+                String code = keys.next();
+                JSONArray formats = manual.optJSONArray(code);
+                if (formats != null && formats.length() > 0) {
+                    unique.put("manual:" + code, new CaptionTrack(code, "Legenda enviada pelo canal", false));
+                }
+            }
+        }
+
+        JSONObject automatic = info.optJSONObject("automatic_captions");
+        if (automatic != null) addAutomaticOriginalTracks(automatic, unique, info.optString("language", ""));
+
+        List<CaptionTrack> out = new ArrayList<>(unique.values());
+        Collections.sort(out, Comparator
+                .comparing((CaptionTrack t) -> !t.isPortuguese())
+                .thenComparing(t -> t.automatic)
+                .thenComparing(t -> t.code.toLowerCase(Locale.ROOT)));
+        return out;
+    }
+
+    private void addAutomaticOriginalTracks(JSONObject obj, Map<String, CaptionTrack> out, String videoLanguage) {
+        List<String> codes = new ArrayList<>();
+        Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) codes.add(keys.next());
+
+        boolean hasOrig = false;
+        for (String code : codes) {
+            if (code.endsWith("-orig")) {
+                hasOrig = true;
+                break;
+            }
+        }
+
+        if (hasOrig) {
+            for (String code : codes) {
+                if (!code.endsWith("-orig")) continue;
+                JSONArray formats = obj.optJSONArray(code);
+                if (formats != null && formats.length() > 0) {
+                    out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática original do YouTube", true));
+                }
+            }
+            return;
+        }
+
+        boolean matchedLanguage = false;
+        if (videoLanguage != null && !videoLanguage.trim().isEmpty()) {
+            for (String code : codes) {
+                if (!code.equalsIgnoreCase(videoLanguage)) continue;
+                JSONArray formats = obj.optJSONArray(code);
+                if (formats != null && formats.length() > 0) {
+                    out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática original do YouTube", true));
+                    matchedLanguage = true;
+                }
+            }
+        }
+        if (matchedLanguage) return;
+
+        for (String code : codes) {
+            String low = code.toLowerCase(Locale.ROOT);
+            if (!(low.equals("pt") || low.startsWith("pt-"))) continue;
+            JSONArray formats = obj.optJSONArray(code);
+            if (formats != null && formats.length() > 0) {
+                out.put("auto:" + code, new CaptionTrack(code, "Transcrição automática do YouTube", true));
+            }
+        }
+    }
+
+    private int preferredTrackIndex(List<CaptionTrack> list) {
+        for (int i = 0; i < list.size(); i++) if (list.get(i).isPortuguese()) return i;
+        return 0;
+    }
+
+    private CaptionTrack preferredTrack(List<CaptionTrack> list) {
+        return list.isEmpty() ? null : list.get(preferredTrackIndex(list));
+    }
+
+    private void extractSelectedVtt() {
+        if (busy || selectedTrack == null || currentUrl == null) return;
+        setBusy(true, "Obtendo a transcrição " + selectedTrack.code + "...");
 
         executor.submit(() -> {
             try {
                 File dir = new File(getCacheDir(), "single_vtt");
                 recreateDirectory(dir);
-
-                runYtDlpForFiles(dir, false);
-                File vtt = findFirstByExtension(dir, ".vtt");
-                if (vtt == null) {
-                    throw new IllegalStateException("O YouTube informou a faixa, mas não entregou o arquivo VTT.");
-                }
-
+                File vtt = downloadCaption(currentUrl, selectedTrack, dir);
+                if (vtt == null) throw new IllegalStateException("O YouTube informou a faixa, mas não entregou o VTT.");
                 currentVtt = vtt;
-
                 runOnUiThread(() -> {
-                    setBusy(false, "VTT pronto. Nenhum vídeo ou áudio foi baixado.");
-                    resultInfo.setText("Arquivo: " + vtt.getName() + "\nTamanho: " + humanSize(vtt.length()));
-                    resultInfo.setVisibility(View.VISIBLE);
-                    resultButtons.setVisibility(View.VISIBLE);
+                    setBusy(false, "Transcrição pronta.");
+                    vttResultInfo.setText(vtt.getName() + " • " + humanSize(vtt.length()));
+                    vttResultInfo.setVisibility(View.VISIBLE);
+                    vttResultButtons.setVisibility(View.VISIBLE);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> showError(friendlyError(e)));
@@ -456,135 +562,608 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void exportAnalysisPackage() {
-        if (selectedTrack == null || currentUrl == null || currentInfo == null) return;
+    private File downloadCaption(String url, CaptionTrack track, File finalDir) throws Exception {
+        File temp = new File(workRoot(), "caption_temp");
+        recreateDirectory(temp);
 
-        setBusy(true, "Montando pacote: VTT + capa + título + descrição + metadados...");
-        packageButtons.setVisibility(View.GONE);
-        packageInfo.setVisibility(View.GONE);
-
-        executor.submit(() -> {
-            try {
-                File workDir = new File(getCacheDir(), "package_work");
-                File packageDir = new File(getCacheDir(), "package_ready");
-                recreateDirectory(workDir);
-                recreateDirectory(packageDir);
-
-                runYtDlpForFiles(workDir, true);
-
-                File sourceVtt = findFirstByExtension(workDir, ".vtt");
-                if (sourceVtt == null) {
-                    throw new IllegalStateException("Não foi possível obter a transcrição selecionada.");
-                }
-
-                String code = sanitizeCode(selectedTrack.code);
-                copyFile(sourceVtt, new File(packageDir, "transcricao." + code + ".vtt"));
-
-                File thumbnail = findThumbnail(workDir);
-                if (thumbnail != null) {
-                    String ext = extensionOf(thumbnail.getName());
-                    copyFile(thumbnail, new File(packageDir, "capa" + ext));
-                }
-
-                writeUtf8(new File(packageDir, "titulo.txt"), currentInfo.optString("title", ""));
-                writeUtf8(new File(packageDir, "descricao.txt"), currentInfo.optString("description", ""));
-
-                File infoJson = findFileEnding(workDir, ".info.json");
-                if (infoJson != null) {
-                    copyFile(infoJson, new File(packageDir, "dados.json"));
-                } else {
-                    writeUtf8(new File(packageDir, "dados.json"), currentInfo.toString(2));
-                }
-
-                writeUtf8(new File(packageDir, "manifesto.txt"), buildManifest());
-
-                String id = currentInfo.optString("id", "video");
-                String zipName = sanitizeFilename(currentInfo.optString("title", "video"), 70)
-                        + " [" + id + "] - pacote-analise.zip";
-                File zip = new File(getCacheDir(), zipName);
-                if (zip.exists()) zip.delete();
-                zipDirectory(packageDir, zip);
-
-                currentPackageZip = zip;
-
-                runOnUiThread(() -> {
-                    setBusy(false, "Pacote completo pronto para análise.");
-                    packageInfo.setText(
-                            "Incluído no ZIP:\n"
-                                    + "• transcrição VTT selecionada\n"
-                                    + "• capa/thumbnail\n"
-                                    + "• titulo.txt\n"
-                                    + "• descricao.txt\n"
-                                    + "• dados.json\n"
-                                    + "• manifesto.txt\n\n"
-                                    + "Tamanho: " + humanSize(zip.length())
-                    );
-                    packageInfo.setVisibility(View.VISIBLE);
-                    packageButtons.setVisibility(View.VISIBLE);
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> showError(friendlyError(e)));
-            }
-        });
-    }
-
-    private void runYtDlpForFiles(File dir, boolean fullPackage) throws Exception {
-        YoutubeDLRequest request = new YoutubeDLRequest(currentUrl);
+        YoutubeDLRequest request = new YoutubeDLRequest(url);
         request.addOption("--skip-download");
         request.addOption("--no-playlist");
         request.addOption("--write-subs");
         request.addOption("--write-auto-subs");
-        request.addOption("--sub-langs", selectedTrack.code);
+        request.addOption("--sub-langs", track.code);
         request.addOption("--sub-format", "vtt");
         request.addOption("--no-warnings");
-
-        if (fullPackage) {
-            request.addOption("--write-thumbnail");
-            request.addOption("--write-description");
-            request.addOption("--write-info-json");
-            request.addOption("--clean-info-json");
-            request.addOption("--no-write-playlist-metafiles");
-        }
-
-        request.addOption("-P", dir.getAbsolutePath());
+        request.addOption("-P", temp.getAbsolutePath());
         request.addOption("-o", "%(id)s.%(ext)s");
         YoutubeDL.getInstance().execute(request);
+
+        File source = findFirstByExtension(temp, ".vtt");
+        if (source == null) return null;
+        File target = new File(finalDir, "transcricao." + sanitizeCode(track.code) + ".vtt");
+        copyFile(source, target);
+        deleteRecursive(temp);
+        return target;
     }
 
-    private String buildManifest() {
+    private void exportAnalysisPackage() {
+        if (busy || currentInfo == null || currentUrl == null) return;
+        setBusy(true, "Montando pacote completo para análise...");
+
+        executor.submit(() -> {
+            try {
+                File packageWork = new File(workRoot(), "single_analysis");
+                recreateDirectory(packageWork);
+                createAnalysisFolder(currentUrl, currentInfo, selectedTrack, packageWork);
+
+                File packagesDir = new File(getCacheDir(), "packages");
+                if (!packagesDir.exists() && !packagesDir.mkdirs()) {
+                    throw new IllegalStateException("Não foi possível preparar a pasta de pacotes.");
+                }
+
+                String id = currentInfo.optString("id", "video");
+                String name = sanitizeFilename(currentInfo.optString("title", "video"), 70)
+                        + " [" + id + "] - pacote-analise.zip";
+                File zip = new File(packagesDir, name);
+                if (zip.exists()) zip.delete();
+                zipDirectory(packageWork, zip);
+                currentPackageZip = zip;
+                deleteRecursive(packageWork);
+
+                runOnUiThread(() -> {
+                    setBusy(false, "Pacote completo pronto.");
+                    packageResultInfo.setText("ZIP • " + humanSize(zip.length()) + " • pronto para compartilhar");
+                    packageResultInfo.setVisibility(View.VISIBLE);
+                    packageResultButtons.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError(friendlyError(e)));
+            }
+        });
+    }
+
+    private void createAnalysisFolder(String url, JSONObject info, CaptionTrack track, File folder) throws Exception {
+        if (!folder.exists() && !folder.mkdirs()) {
+            throw new IllegalStateException("Não foi possível criar a pasta de análise.");
+        }
+
+        writeUtf8(new File(folder, "titulo.txt"), info.optString("title", ""));
+        writeUtf8(new File(folder, "descricao.txt"), info.optString("description", ""));
+        writeUtf8(new File(folder, "dados.json"), info.toString(2));
+        writeUtf8(new File(folder, "manifesto.txt"), buildManifest(url, info, track));
+
+        String thumb = info.optString("thumbnail", "");
+        if (!thumb.isEmpty()) {
+            try {
+                downloadRawFile(thumb, new File(folder, "capa" + extensionFromUrl(thumb)));
+            } catch (Exception ignored) { }
+        }
+
+        if (track != null) {
+            File tempCaptionDir = new File(workRoot(), "analysis_caption_" + System.nanoTime());
+            recreateDirectory(tempCaptionDir);
+            File vtt = downloadCaption(url, track, tempCaptionDir);
+            if (vtt != null) {
+                copyFile(vtt, new File(folder, "transcricao." + sanitizeCode(track.code) + ".vtt"));
+            } else {
+                writeUtf8(new File(folder, "sem_transcricao.txt"), "A faixa foi detectada, mas o VTT não pôde ser obtido.");
+            }
+            deleteRecursive(tempCaptionDir);
+        } else {
+            writeUtf8(new File(folder, "sem_transcricao.txt"),
+                    "Este vídeo não possui uma transcrição disponível no YouTube no momento da extração.");
+        }
+    }
+
+    private String buildManifest(String url, JSONObject info, CaptionTrack track) {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US);
-        String extractedAt = sdf.format(new Date());
-
         return "PMCN Studios - Pacote para análise de vídeo\n"
-                + "Extraído em: " + extractedAt + "\n"
-                + "URL: " + currentUrl + "\n"
-                + "ID do vídeo: " + currentInfo.optString("id", "") + "\n"
-                + "Faixa selecionada: " + selectedTrack.code + "\n"
-                + "Tipo: " + selectedTrack.source + "\n"
-                + "\n"
-                + "O pacote preserva os dados públicos obtidos do vídeo no momento da extração.\n"
-                + "Nenhum áudio ou vídeo foi baixado para gerar a transcrição.\n";
+                + "Extraído em: " + sdf.format(new Date()) + "\n"
+                + "URL: " + url + "\n"
+                + "ID do vídeo: " + info.optString("id", "") + "\n"
+                + "Faixa selecionada: " + (track == null ? "nenhuma" : track.code) + "\n"
+                + "Tipo: " + (track == null ? "sem transcrição disponível" : track.source) + "\n\n"
+                + "Título, descrição, capa, metadados e transcrição são preservados para análise.\n"
+                + "Nenhum áudio ou vídeo é baixado para gerar este pacote.\n";
     }
 
-    private void hideResults() {
+    private void startSingleMediaDownload(boolean video) {
+        if (busy || !engineReady) return;
+        String url = requireSingleUrl();
+        if (url == null) return;
+
+        String option = video
+                ? videoQualityKey(videoQualitySpinner.getSelectedItemPosition())
+                : audioFormatKey(audioFormatSpinner.getSelectedItemPosition());
+
+        setBusy(true, video ? "Baixando vídeo..." : "Extraindo áudio...");
+        currentMediaFile = null;
+        mediaResultCard.setVisibility(View.GONE);
+
+        executor.submit(() -> {
+            try {
+                File dir = new File(workRoot(), "media_single");
+                recreateDirectory(dir);
+                File file = downloadMedia(url, video, option, dir);
+                if (file == null) throw new IllegalStateException("O download terminou sem gerar um arquivo utilizável.");
+
+                currentMediaFile = file;
+                currentMediaIsVideo = video;
+                currentMediaMime = mimeForFile(file);
+
+                runOnUiThread(() -> {
+                    setBusy(false, video ? "Vídeo pronto." : "Áudio pronto.");
+                    mediaResultInfo.setText(file.getName() + "\n" + humanSize(file.length()));
+                    mediaResultCard.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError(friendlyError(e)));
+            }
+        });
+    }
+
+    private File downloadMedia(String url, boolean video, String option, File dir) throws Exception {
+        YoutubeDLRequest request = new YoutubeDLRequest(url);
+        request.addOption("--no-playlist");
+        request.addOption("--no-warnings");
+        request.addOption("--no-mtime");
+        request.addOption("--retries", "5");
+        request.addOption("--fragment-retries", "5");
+        request.addOption("-P", dir.getAbsolutePath());
+        request.addOption("-o", "%(title).100B [%(id)s].%(ext)s");
+
+        if (video) {
+            request.addOption("-f", videoFormatSelector(option));
+            request.addOption("--merge-output-format", "mp4");
+        } else {
+            request.addOption("-f", "bestaudio/best");
+            request.addOption("--extract-audio");
+            request.addOption("--audio-format", option);
+            request.addOption("--audio-quality", "0");
+        }
+
+        YoutubeDL.getInstance().execute(request);
+        return findMediaOutput(dir);
+    }
+
+    private String videoFormatSelector(String key) {
+        if ("1080".equals(key)) {
+            return "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]";
+        }
+        if ("720".equals(key)) {
+            return "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]";
+        }
+        if ("480".equals(key)) {
+            return "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/bv*[height<=480]+ba/b[height<=480]";
+        }
+        return "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b";
+    }
+
+    private void startBatch() {
+        if (busy || !engineReady) return;
+        String text = batchInput.getText() == null ? "" : batchInput.getText().toString().trim();
+        if (text.isEmpty()) {
+            batchInput.setError("Cole uma playlist ou vários links.");
+            return;
+        }
+
+        int type = batchTypeSpinner.getSelectedItemPosition();
+        String format = batchFormatKey(type, batchFormatSpinner.getSelectedItemPosition());
+        batchResultInfo.setVisibility(View.GONE);
+
+        if (type == 0) {
+            processBatchAnalysis(text);
+        } else {
+            pendingBatchText = text;
+            pendingBatchType = type;
+            pendingBatchFormat = format;
+            batchFolderLauncher.launch(null);
+        }
+    }
+
+    private void processBatchAnalysis(String text) {
+        setBusy(true, "Lendo playlist/lote...");
+        executor.submit(() -> {
+            try {
+                List<String> urls = expandBatchLinks(text);
+                if (urls.isEmpty()) throw new IllegalStateException("Nenhum vídeo válido foi encontrado.");
+                if (urls.size() > 100) {
+                    throw new IllegalStateException("Pré-teste limitado a 100 vídeos por lote.");
+                }
+
+                File root = new File(workRoot(), "batch_analysis");
+                recreateDirectory(root);
+                JSONArray indexEntries = new JSONArray();
+                int ok = 0;
+
+                for (int i = 0; i < urls.size(); i++) {
+                    String url = urls.get(i);
+                    final int number = i + 1;
+                    runOnUiThread(() -> setStatus("Analisando item " + number + " de " + urls.size() + "..."));
+
+                    JSONObject row = new JSONObject();
+                    row.put("ordem", number);
+                    row.put("url", url);
+
+                    try {
+                        JSONObject info = getVideoJson(url);
+                        List<CaptionTrack> available = parseTracks(info);
+                        CaptionTrack track = preferredTrack(available);
+                        String id = info.optString("id", "video_" + number);
+                        File folder = new File(root, String.format(Locale.US, "%03d_%s", number, sanitizeFilename(id, 40)));
+                        createAnalysisFolder(url, info, track, folder);
+
+                        row.put("id", id);
+                        row.put("title", info.optString("title", ""));
+                        row.put("channel", firstNonEmpty(info.optString("channel", ""), info.optString("uploader", "")));
+                        row.put("upload_date", info.optString("upload_date", ""));
+                        row.put("duration", info.optLong("duration", -1));
+                        row.put("transcript_track", track == null ? JSONObject.NULL : track.code);
+                        row.put("status", "ok");
+                        ok++;
+                    } catch (Exception itemError) {
+                        row.put("status", "erro");
+                        row.put("erro", safeMessage(itemError));
+                    }
+                    indexEntries.put(row);
+                }
+
+                JSONObject index = new JSONObject();
+                index.put("gerado_em", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(new Date()));
+                index.put("total", urls.size());
+                index.put("concluidos", ok);
+                index.put("videos", indexEntries);
+                writeUtf8(new File(root, "indice.json"), index.toString(2));
+
+                File packagesDir = new File(getCacheDir(), "packages");
+                if (!packagesDir.exists() && !packagesDir.mkdirs()) {
+                    throw new IllegalStateException("Não foi possível preparar a pasta de pacotes.");
+                }
+
+                String stamp = new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new Date());
+                File zip = new File(packagesDir, "Lote-Analise-" + stamp + ".zip");
+                if (zip.exists()) zip.delete();
+                zipDirectory(root, zip);
+                currentPackageZip = zip;
+                deleteRecursive(root);
+
+                int finalOk = ok;
+                runOnUiThread(() -> {
+                    setBusy(false, "Lote de análise concluído.");
+                    batchResultInfo.setText(finalOk + " de " + urls.size()
+                            + " vídeos preparados.\nZIP: " + humanSize(zip.length()));
+                    batchResultInfo.setVisibility(View.VISIBLE);
+                    packageResultInfo.setText("Pacote de lote • " + humanSize(zip.length()));
+                    packageResultInfo.setVisibility(View.VISIBLE);
+                    packageResultButtons.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError(friendlyError(e)));
+            }
+        });
+    }
+
+    private void processBatchMedia(Uri treeUri) {
+        if (pendingBatchText == null) return;
+        setBusy(true, "Preparando playlist/lote...");
+
+        executor.submit(() -> {
+            try {
+                List<String> urls = expandBatchLinks(pendingBatchText);
+                if (urls.isEmpty()) throw new IllegalStateException("Nenhum vídeo válido foi encontrado.");
+                if (urls.size() > 100) {
+                    throw new IllegalStateException("Pré-teste limitado a 100 vídeos por lote.");
+                }
+
+                int ok = 0;
+                List<String> errors = new ArrayList<>();
+                boolean video = pendingBatchType == 1;
+
+                for (int i = 0; i < urls.size(); i++) {
+                    String url = urls.get(i);
+                    final int number = i + 1;
+                    runOnUiThread(() -> setStatus((video ? "Baixando vídeo " : "Extraindo áudio ")
+                            + number + " de " + urls.size() + "..."));
+
+                    File itemDir = new File(workRoot(), "batch_item");
+                    recreateDirectory(itemDir);
+
+                    try {
+                        File file = downloadMedia(url, video, pendingBatchFormat, itemDir);
+                        if (file == null) throw new IllegalStateException("Arquivo final não encontrado.");
+                        publishToTree(file, treeUri);
+                        ok++;
+                    } catch (Exception itemError) {
+                        errors.add(number + ": " + safeMessage(itemError));
+                    } finally {
+                        deleteRecursive(itemDir);
+                    }
+                }
+
+                int finalOk = ok;
+                runOnUiThread(() -> {
+                    setBusy(false, "Lote concluído.");
+                    StringBuilder summary = new StringBuilder();
+                    summary.append(finalOk).append(" de ").append(urls.size()).append(" arquivos salvos.");
+                    if (!errors.isEmpty()) {
+                        summary.append("\nFalhas: ").append(errors.size());
+                        for (int i = 0; i < Math.min(3, errors.size()); i++) {
+                            summary.append("\n• ").append(errors.get(i));
+                        }
+                    }
+                    batchResultInfo.setText(summary.toString());
+                    batchResultInfo.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError(friendlyError(e)));
+            }
+        });
+    }
+
+    private List<String> expandBatchLinks(String text) throws Exception {
+        List<String> input = extractUrls(text);
+        Set<String> out = new LinkedHashSet<>();
+
+        for (String url : input) {
+            if (isLikelyPlaylist(url)) {
+                List<String> expanded = expandPlaylist(url);
+                if (expanded.isEmpty()) out.add(url);
+                else out.addAll(expanded);
+            } else {
+                out.add(url);
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    private List<String> expandPlaylist(String url) {
+        List<String> out = new ArrayList<>();
+        try {
+            YoutubeDLRequest request = new YoutubeDLRequest(url);
+            request.addOption("--flat-playlist");
+            request.addOption("--dump-single-json");
+            request.addOption("--no-warnings");
+            request.addOption("--quiet");
+            String result = YoutubeDL.getInstance().execute(request).getOut();
+            JSONObject json = jsonFromOutput(result, "Playlist inválida.");
+            JSONArray entries = json.optJSONArray("entries");
+            if (entries == null) return out;
+
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject e = entries.optJSONObject(i);
+                if (e == null) continue;
+                String page = e.optString("webpage_url", "");
+                if (page.startsWith("http")) {
+                    out.add(page);
+                    continue;
+                }
+                String raw = e.optString("url", "");
+                if (raw.startsWith("http")) {
+                    out.add(raw);
+                    continue;
+                }
+                String id = e.optString("id", raw);
+                if (!id.isEmpty()) out.add("https://www.youtube.com/watch?v=" + id);
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    private boolean isLikelyPlaylist(String url) {
+        String low = url.toLowerCase(Locale.ROOT);
+        return low.contains("list=") || low.contains("/playlist");
+    }
+
+    private List<String> extractUrls(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null) return out;
+        Matcher m = Pattern.compile("https?://[^\\s]+", Pattern.CASE_INSENSITIVE).matcher(text);
+        while (m.find()) {
+            String url = trimTrailingPunctuation(m.group());
+            if (!url.isEmpty()) out.add(url);
+        }
+        return out;
+    }
+
+    private String extractFirstUrl(String text) {
+        List<String> urls = extractUrls(text);
+        return urls.isEmpty() ? null : urls.get(0);
+    }
+
+    private String trimTrailingPunctuation(String url) {
+        while (url.endsWith(".") || url.endsWith(",") || url.endsWith(";") || url.endsWith(")")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        return url;
+    }
+
+    private void publishToTree(File source, Uri treeUri) throws Exception {
+        DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
+        if (root == null || !root.canWrite()) throw new IllegalStateException("A pasta escolhida não permite gravação.");
+
+        String name = safeDocumentName(source.getName());
+        DocumentFile old = root.findFile(name);
+        if (old != null) old.delete();
+
+        DocumentFile target = root.createFile(mimeForFile(source), name);
+        if (target == null) throw new IllegalStateException("Não foi possível criar " + name);
+
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             OutputStream out = getContentResolver().openOutputStream(target.getUri())) {
+            if (out == null) throw new IllegalStateException("Não foi possível abrir o arquivo de destino.");
+            copyStream(in, out);
+        }
+    }
+
+    private void loadThumbnailPreview(String thumbnailUrl, String expectedUrl) {
+        if (thumbnailUrl == null || thumbnailUrl.isEmpty()) return;
+        executor.submit(() -> {
+            try {
+                HttpURLConnection connection = (HttpURLConnection) new URL(thumbnailUrl).openConnection();
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(15000);
+                try (InputStream input = new BufferedInputStream(connection.getInputStream())) {
+                    Bitmap bitmap = BitmapFactory.decodeStream(input);
+                    if (bitmap != null) {
+                        runOnUiThread(() -> {
+                            if (expectedUrl.equals(currentUrl)) {
+                                thumbnailView.setImageBitmap(bitmap);
+                                thumbnailView.setVisibility(View.VISIBLE);
+                            }
+                        });
+                    }
+                } finally {
+                    connection.disconnect();
+                }
+            } catch (Exception ignored) { }
+        });
+    }
+
+    private void downloadRawFile(String url, File destination) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(20000);
+        connection.setInstanceFollowRedirects(true);
+        try (InputStream in = new BufferedInputStream(connection.getInputStream());
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
+            copyStream(in, out);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private String extensionFromUrl(String url) {
+        String clean = url;
+        int q = clean.indexOf('?');
+        if (q >= 0) clean = clean.substring(0, q);
+        String lower = clean.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".webp")) return ".webp";
+        if (lower.endsWith(".png")) return ".png";
+        if (lower.endsWith(".jpeg")) return ".jpeg";
+        return ".jpg";
+    }
+
+    private File workRoot() {
+        File external = getExternalCacheDir();
+        return external != null ? external : getCacheDir();
+    }
+
+    private File findMediaOutput(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        File best = null;
+        for (File file : files) {
+            if (!file.isFile()) continue;
+            String n = file.getName().toLowerCase(Locale.ROOT);
+            if (n.endsWith(".part") || n.endsWith(".ytdl") || n.endsWith(".json")
+                    || n.endsWith(".description") || n.endsWith(".vtt") || n.endsWith(".srt")
+                    || n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".webp")) {
+                continue;
+            }
+            if (best == null || file.length() > best.length()) best = file;
+        }
+        return best;
+    }
+
+    private File findFirstByExtension(File dir, String extension) {
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        for (File file : files) {
+            if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(extension)) return file;
+        }
+        return null;
+    }
+
+    private void hideAnalysisResults() {
+        videoInfoCard.setVisibility(View.GONE);
         thumbnailView.setVisibility(View.GONE);
-        videoTitle.setVisibility(View.GONE);
-        metaText.setVisibility(View.GONE);
-        descriptionLabel.setVisibility(View.GONE);
-        descriptionText.setVisibility(View.GONE);
         tracksLabel.setVisibility(View.GONE);
-        resultButtons.setVisibility(View.GONE);
-        resultInfo.setVisibility(View.GONE);
-        packageButtons.setVisibility(View.GONE);
-        packageInfo.setVisibility(View.GONE);
+        vttResultButtons.setVisibility(View.GONE);
+        vttResultInfo.setVisibility(View.GONE);
+        packageResultButtons.setVisibility(View.GONE);
+        packageResultInfo.setVisibility(View.GONE);
         extractButton.setEnabled(false);
         exportPackageButton.setEnabled(false);
+    }
+
+    private void shareFile(File file, String mimeType, String chooserTitle) {
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", file);
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType(mimeType);
+            share.putExtra(Intent.EXTRA_STREAM, uri);
+            share.setClipData(ClipData.newUri(getContentResolver(), file.getName(), uri));
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, chooserTitle));
+        } catch (Exception e) {
+            showError("Não foi possível compartilhar o arquivo: " + safeMessage(e));
+        }
+    }
+
+    private void copyToUri(File source, Uri uri, String successMessage) {
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) throw new IllegalStateException("Não foi possível abrir o destino.");
+            copyStream(in, out);
+            Toast.makeText(this, successMessage, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            showError("Falha ao salvar: " + safeMessage(e));
+        }
+    }
+
+    private void copyFile(File source, File destination) throws Exception {
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
+            copyStream(in, out);
+        }
+    }
+
+    private void copyStream(InputStream in, OutputStream out) throws Exception {
+        byte[] buffer = new byte[32768];
+        int read;
+        while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+    }
+
+    private void writeUtf8(File file, String content) throws Exception {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(file))) {
+            out.write(content.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private void zipDirectory(File sourceDir, File zipFile) throws Exception {
+        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)))) {
+            addToZip(sourceDir, sourceDir, zos);
+        }
+    }
+
+    private void addToZip(File root, File current, ZipOutputStream zos) throws Exception {
+        File[] files = current.listFiles();
+        if (files == null) return;
+        byte[] buffer = new byte[32768];
+
+        for (File file : files) {
+            if (file.isDirectory()) {
+                addToZip(root, file, zos);
+                continue;
+            }
+            String relative = root.toURI().relativize(file.toURI()).getPath();
+            zos.putNextEntry(new ZipEntry(relative));
+            try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+                int read;
+                while ((read = in.read(buffer)) != -1) zos.write(buffer, 0, read);
+            }
+            zos.closeEntry();
+        }
     }
 
     private void recreateDirectory(File dir) {
         deleteRecursive(dir);
         if (!dir.mkdirs() && !dir.isDirectory()) {
-            throw new IllegalStateException("Não foi possível preparar a pasta temporária.");
+            throw new IllegalStateException("Não foi possível preparar o armazenamento temporário.");
         }
     }
 
@@ -592,108 +1171,45 @@ public class MainActivity extends AppCompatActivity {
         if (file == null || !file.exists()) return;
         if (file.isDirectory()) {
             File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) deleteRecursive(child);
-            }
+            if (children != null) for (File child : children) deleteRecursive(child);
         }
         file.delete();
     }
 
-    private File findFirstByExtension(File dir, String extension) {
-        File[] files = dir.listFiles();
-        if (files == null) return null;
-        for (File file : files) {
-            if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(extension)) {
-                return file;
-            }
-        }
-        return null;
+    private String mimeForFile(File file) {
+        String n = file.getName().toLowerCase(Locale.ROOT);
+        if (n.endsWith(".mp4") || n.endsWith(".m4v")) return "video/mp4";
+        if (n.endsWith(".webm")) return currentMediaIsVideo ? "video/webm" : "audio/webm";
+        if (n.endsWith(".mkv")) return "video/x-matroska";
+        if (n.endsWith(".mp3")) return "audio/mpeg";
+        if (n.endsWith(".m4a")) return "audio/mp4";
+        if (n.endsWith(".opus")) return "audio/ogg";
+        if (n.endsWith(".ogg")) return "audio/ogg";
+        if (n.endsWith(".wav")) return "audio/wav";
+        if (n.endsWith(".vtt")) return "text/vtt";
+        if (n.endsWith(".zip")) return "application/zip";
+        return "application/octet-stream";
     }
 
-    private File findFileEnding(File dir, String ending) {
-        File[] files = dir.listFiles();
-        if (files == null) return null;
-        for (File file : files) {
-            if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(ending)) {
-                return file;
-            }
-        }
-        return null;
+    private void setBusy(boolean value, String message) {
+        busy = value;
+        progress.setVisibility(value ? View.VISIBLE : View.GONE);
+        setStatus(message);
+        refreshEnabledState();
     }
 
-    private File findThumbnail(File dir) {
-        File[] files = dir.listFiles();
-        if (files == null) return null;
-        String[] extensions = {".webp", ".jpg", ".jpeg", ".png"};
-        for (String ext : extensions) {
-            for (File file : files) {
-                if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(ext)) return file;
-            }
-        }
-        return null;
-    }
-
-    private void copyFile(File source, File destination) throws Exception {
-        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
-             OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-        }
-    }
-
-    private void writeUtf8(File file, String content) throws Exception {
-        try (OutputStream out = new FileOutputStream(file)) {
-            out.write(content.getBytes(StandardCharsets.UTF_8));
-        }
-    }
-
-    private void zipDirectory(File sourceDir, File zipFile) throws Exception {
-        try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)))) {
-            File[] files = sourceDir.listFiles();
-            if (files == null) return;
-
-            byte[] buffer = new byte[8192];
-            for (File file : files) {
-                if (!file.isFile()) continue;
-                zos.putNextEntry(new ZipEntry(file.getName()));
-                try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
-                    int read;
-                    while ((read = in.read(buffer)) != -1) zos.write(buffer, 0, read);
-                }
-                zos.closeEntry();
-            }
-        }
-    }
-
-    private void copyToUri(File source, Uri uri, String successMessage) {
-        try (InputStream in = new FileInputStream(source);
-             OutputStream out = getContentResolver().openOutputStream(uri)) {
-            if (out == null) throw new IllegalStateException("Não foi possível abrir o destino.");
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-            Toast.makeText(this, successMessage, Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            showError("Falha ao salvar: " + e.getMessage());
-        }
-    }
-
-    private void shareFile(File file, String mimeType, String chooserTitle) {
-        Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", file);
-        Intent share = new Intent(Intent.ACTION_SEND);
-        share.setType(mimeType);
-        share.putExtra(Intent.EXTRA_STREAM, uri);
-        share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivity(Intent.createChooser(share, chooserTitle));
-    }
-
-    private void setBusy(boolean busy, String message) {
-        progress.setVisibility(busy ? View.VISIBLE : View.GONE);
-        analyzeButton.setEnabled(!busy && engineReady);
-        extractButton.setEnabled(!busy && selectedTrack != null);
-        exportPackageButton.setEnabled(!busy && selectedTrack != null);
+    private void setStatus(String message) {
         statusText.setText(message);
+    }
+
+    private void refreshEnabledState() {
+        boolean available = engineReady && !busy;
+        analyzeButton.setEnabled(available);
+        downloadVideoButton.setEnabled(available);
+        downloadAudioButton.setEnabled(available);
+        processBatchButton.setEnabled(available);
+        extractButton.setEnabled(available && selectedTrack != null);
+        exportPackageButton.setEnabled(available && currentInfo != null);
     }
 
     private void showError(String message) {
@@ -702,22 +1218,28 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String friendlyError(Exception e) {
-        String m = e.getMessage();
-        if (m == null) m = e.toString();
+        String m = safeMessage(e);
         String low = m.toLowerCase(Locale.ROOT);
 
         if (low.contains("unable to resolve host") || low.contains("network")
                 || low.contains("urlopen") || low.contains("no address associated")) {
-            return "Sem acesso à internet neste momento. Verifique a conexão e tente novamente.";
+            return "Sem acesso à internet. Verifique a conexão e tente novamente.";
         }
         if (low.contains("private video")) return "Este vídeo é privado.";
         if (low.contains("sign in") || low.contains("login")) {
-            return "Este vídeo exige login no YouTube e não pode ser acessado anonimamente.";
+            return "Este conteúdo exige login no YouTube.";
         }
-        if (low.contains("unsupported url")) {
-            return "O link informado não foi reconhecido como um vídeo compatível.";
+        if (low.contains("unsupported url")) return "O link não foi reconhecido.";
+        if (low.contains("requested format is not available")) {
+            return "A qualidade/formato escolhido não está disponível para este vídeo.";
         }
         return "Erro: " + m;
+    }
+
+    private String safeMessage(Exception e) {
+        String m = e.getMessage();
+        if (m == null || m.trim().isEmpty()) m = e.toString();
+        return m.length() > 320 ? m.substring(0, 320) : m;
     }
 
     private void appendMeta(StringBuilder sb, String label, String value) {
@@ -750,8 +1272,9 @@ public class MainActivity extends AppCompatActivity {
 
     private String humanSize(long bytes) {
         if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
-        return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        if (bytes < 1024L * 1024L) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024L * 1024L) return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        return String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
     }
 
     private String sanitizeCode(String code) {
@@ -766,9 +1289,52 @@ public class MainActivity extends AppCompatActivity {
         return clean;
     }
 
-    private String extensionOf(String name) {
-        int dot = name.lastIndexOf('.');
-        return dot >= 0 ? name.substring(dot).toLowerCase(Locale.ROOT) : ".img";
+    private String safeDocumentName(String name) {
+        String clean = sanitizeFilename(name, 150);
+        return clean.isEmpty() ? "arquivo" : clean;
+    }
+
+    private void setSpinnerItems(Spinner spinner, String[] values) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+    }
+
+    private String[] videoQualityLabels() {
+        return new String[]{"Melhor disponível", "Até 1080p", "Até 720p", "Até 480p"};
+    }
+
+    private String[] audioFormatLabels() {
+        return new String[]{"MP3 • qualidade máxima", "M4A • qualidade máxima", "Opus • qualidade máxima"};
+    }
+
+    private String videoQualityKey(int pos) {
+        if (pos == 1) return "1080";
+        if (pos == 2) return "720";
+        if (pos == 3) return "480";
+        return "best";
+    }
+
+    private String audioFormatKey(int pos) {
+        if (pos == 1) return "m4a";
+        if (pos == 2) return "opus";
+        return "mp3";
+    }
+
+    private void updateBatchFormatSpinner(int batchType) {
+        if (batchType == 0) {
+            setSpinnerItems(batchFormatSpinner, new String[]{"Português preferido • original quando disponível"});
+        } else if (batchType == 1) {
+            setSpinnerItems(batchFormatSpinner, videoQualityLabels());
+        } else {
+            setSpinnerItems(batchFormatSpinner, audioFormatLabels());
+        }
+    }
+
+    private String batchFormatKey(int batchType, int pos) {
+        if (batchType == 1) return videoQualityKey(pos);
+        if (batchType == 2) return audioFormatKey(pos);
+        return "analysis";
     }
 
     @Override
@@ -804,5 +1370,25 @@ public class MainActivity extends AppCompatActivity {
             if (name == null || name.trim().isEmpty() || name.equalsIgnoreCase(normalized)) return normalized;
             return name.substring(0, 1).toUpperCase(new Locale("pt", "BR")) + name.substring(1);
         }
+    }
+
+    private interface PositionConsumer {
+        void accept(int position);
+    }
+
+    private static class SimpleItemSelectedListener implements android.widget.AdapterView.OnItemSelectedListener {
+        private final PositionConsumer consumer;
+
+        SimpleItemSelectedListener(PositionConsumer consumer) {
+            this.consumer = consumer;
+        }
+
+        @Override
+        public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+            consumer.accept(position);
+        }
+
+        @Override
+        public void onNothingSelected(android.widget.AdapterView<?> parent) { }
     }
 }
