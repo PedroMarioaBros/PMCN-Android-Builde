@@ -1,4 +1,4 @@
-name: OpenXeChain Public Runner Probe
+name: OpenXeChain Public Build
 
 on:
   pull_request:
@@ -9,12 +9,69 @@ on:
 permissions:
   contents: read
 
+env:
+  OPENXECHAIN_COMMIT: eed1fa65bf9577fd31625764b320a90182ea9ade
+  OPENXECHAIN_PREFIX: ${{ github.workspace }}/openxechain-sysroot
+
 jobs:
-  probe:
+  build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 330
+
     steps:
-      - name: Prove public runner works
+      - name: Install dependencies
         run: |
-          echo "PUBLIC_RUNNER_OK"
-          uname -a
-          free -h
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang lld binutils git cmake make ninja-build python3 python3-yaml \
+            bzip2 gzip grep findutils sed tar unzip zip gawk zlib1g-dev zstd
+
+      - name: Fetch pinned OpenXeChain
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git clone --recursive https://github.com/OpenXeChain/buildscript.git openxechain-src
+          git -C openxechain-src checkout --detach "$OPENXECHAIN_COMMIT"
+          git -C openxechain-src submodule sync --recursive
+          git -C openxechain-src submodule update --init --recursive
+          test "$(git -C openxechain-src rev-parse HEAD)" = "$OPENXECHAIN_COMMIT"
+
+      - name: Build OpenXeChain
+        run: |
+          mkdir -p "$OPENXECHAIN_PREFIX"
+          (
+            cd openxechain-src
+            PREFIX="$OPENXECHAIN_PREFIX" PARALLEL=2 BUILD_TYPE=Release bash ./build-toolchain.sh
+          )
+
+      - name: Validate toolchain
+        run: |
+          test -x "$OPENXECHAIN_PREFIX/bin/clang"
+          test -x "$OPENXECHAIN_PREFIX/bin/lld-link"
+          test -x "$OPENXECHAIN_PREFIX/bin/synthxex"
+          "$OPENXECHAIN_PREFIX/bin/clang" --version
+          "$OPENXECHAIN_PREFIX/bin/synthxex" --version || true
+
+      - name: Package portable toolchain
+        run: |
+          tar -C "${{ github.workspace }}" -I 'zstd -T0 -6' -cf openxechain-sysroot.tar.zst openxechain-sysroot
+          sha256sum openxechain-sysroot.tar.zst | tee OPENXECHAIN-SHA256SUMS.txt
+          ls -lh openxechain-sysroot.tar.zst
+
+      - name: Upload OpenXeChain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openxechain-pinned-sysroot
+          path: |
+            openxechain-sysroot.tar.zst
+            OPENXECHAIN-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openxechain-build-debug
+          path: openxechain-src/build.log
+          if-no-files-found: ignore
+          retention-days: 7
