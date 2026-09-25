@@ -87,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
     private View mediaResultCard;
     private View vttResultButtons;
     private View packageResultButtons;
+    private View batchPackageActions;
     private Button analyzeButton;
     private Button extractButton;
     private Button exportPackageButton;
@@ -99,6 +100,7 @@ public class MainActivity extends AppCompatActivity {
     private Button saveMediaButton;
     private Button shareMediaButton;
     private Button processBatchButton;
+    private Button shareBatchPackageButton;
     private ProgressBar progress;
     private TextView statusText;
     private TextView videoTitle;
@@ -141,6 +143,15 @@ public class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<String> zipSaveLauncher =
             registerForActivityResult(new ActivityResultContracts.CreateDocument("application/zip"), uri -> {
                 if (uri != null && currentPackageZip != null) copyToUri(currentPackageZip, uri, "Pacote ZIP salvo.");
+            });
+
+    private final ActivityResultLauncher<String> batchPackageSaveLauncher =
+            registerForActivityResult(new ActivityResultContracts.CreateDocument("application/zip"), uri -> {
+                if (uri == null) {
+                    setStatus("Seleção de local cancelada.");
+                    return;
+                }
+                processBatchAnalysis(pendingBatchText, uri);
             });
 
     private final ActivityResultLauncher<String> videoSaveLauncher =
@@ -204,6 +215,7 @@ public class MainActivity extends AppCompatActivity {
         mediaResultCard = findViewById(R.id.mediaResultCard);
         vttResultButtons = findViewById(R.id.vttResultButtons);
         packageResultButtons = findViewById(R.id.packageResultButtons);
+        batchPackageActions = findViewById(R.id.batchPackageActions);
         analyzeButton = findViewById(R.id.analyzeButton);
         extractButton = findViewById(R.id.extractButton);
         exportPackageButton = findViewById(R.id.exportPackageButton);
@@ -216,6 +228,7 @@ public class MainActivity extends AppCompatActivity {
         saveMediaButton = findViewById(R.id.saveMediaButton);
         shareMediaButton = findViewById(R.id.shareMediaButton);
         processBatchButton = findViewById(R.id.processBatchButton);
+        shareBatchPackageButton = findViewById(R.id.shareBatchPackageButton);
         progress = findViewById(R.id.progress);
         statusText = findViewById(R.id.statusText);
         videoTitle = findViewById(R.id.videoTitle);
@@ -287,6 +300,11 @@ public class MainActivity extends AppCompatActivity {
         });
 
         processBatchButton.setOnClickListener(v -> startBatch());
+        shareBatchPackageButton.setOnClickListener(v -> {
+            if (currentPackageZip != null) {
+                shareFile(currentPackageZip, "application/zip", "Compartilhar pacote de análise");
+            }
+        });
     }
 
     private void initializeEngine() {
@@ -843,18 +861,22 @@ public class MainActivity extends AppCompatActivity {
         int type = batchTypeSpinner.getSelectedItemPosition();
         String format = batchFormatKey(type, batchFormatSpinner.getSelectedItemPosition());
         batchResultInfo.setVisibility(View.GONE);
+        batchPackageActions.setVisibility(View.GONE);
+
+        pendingBatchText = text;
+        pendingBatchType = type;
+        pendingBatchFormat = format;
 
         if (type == 0) {
-            processBatchAnalysis(text);
+            String stamp = new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new Date());
+            batchPackageSaveLauncher.launch("Lote-Analise-" + stamp + ".zip");
         } else {
-            pendingBatchText = text;
-            pendingBatchType = type;
-            pendingBatchFormat = format;
             batchFolderLauncher.launch(null);
         }
     }
 
-    private void processBatchAnalysis(String text) {
+    private void processBatchAnalysis(String text, Uri destinationUri) {
+        if (text == null || destinationUri == null) return;
         setBusy(true, "Lendo playlist/lote...");
         executor.submit(() -> {
             try {
@@ -883,11 +905,15 @@ public class MainActivity extends AppCompatActivity {
                         List<CaptionTrack> available = parseTracks(info);
                         CaptionTrack track = preferredTrack(available);
                         String id = info.optString("id", "video_" + number);
-                        File folder = new File(root, String.format(Locale.US, "%03d_%s", number, sanitizeFilename(id, 40)));
+                        String title = info.optString("title", "Vídeo " + number);
+                        File folder = new File(root, String.format(Locale.US, "%03d - %s [%s]",
+                                number,
+                                sanitizeFilename(title, 70),
+                                sanitizeFilename(id, 30)));
                         createAnalysisFolder(url, info, track, folder);
 
                         row.put("id", id);
-                        row.put("title", info.optString("title", ""));
+                        row.put("title", title);
                         row.put("channel", firstNonEmpty(info.optString("channel", ""), info.optString("uploader", "")));
                         row.put("upload_date", info.optString("upload_date", ""));
                         row.put("duration", info.optLong("duration", -1));
@@ -922,17 +948,17 @@ public class MainActivity extends AppCompatActivity {
                 if (zip.exists()) zip.delete();
                 zipDirectory(root, zip);
                 currentPackageZip = zip;
+                copyToUriBlocking(zip, destinationUri);
                 deleteRecursive(root);
 
                 int finalOk = ok;
                 runOnUiThread(() -> {
-                    setBusy(false, "Lote de análise concluído.");
+                    setBusy(false, "Lote de análise concluído e salvo.");
                     batchResultInfo.setText(finalOk + " de " + urls.size()
-                            + " vídeos preparados.\nZIP: " + humanSize(zip.length()));
+                            + " vídeos preparados.\nZIP salvo • " + humanSize(zip.length()));
                     batchResultInfo.setVisibility(View.VISIBLE);
-                    packageResultInfo.setText("Pacote de lote • " + humanSize(zip.length()));
-                    packageResultInfo.setVisibility(View.VISIBLE);
-                    packageResultButtons.setVisibility(View.VISIBLE);
+                    batchPackageActions.setVisibility(View.VISIBLE);
+                    Toast.makeText(this, "Pacote ZIP salvo.", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> showError(friendlyError(e)));
@@ -1163,12 +1189,19 @@ public class MainActivity extends AppCompatActivity {
                     try {
                         File file = downloadMedia(url, video, pendingBatchFormat, itemDir);
                         if (file == null) throw new IllegalStateException("Arquivo final não encontrado.");
-                        publishToTree(file, treeUri);
+                        DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
+                        String numberedName = String.format(Locale.US, "%03d - %s",
+                                number, safeDocumentName(file.getName()));
+                        publishToFolder(file, root, numberedName);
                         ok++;
                     } catch (Exception itemError) {
                         errors.add(number + ": " + safeMessage(itemError));
                     } finally {
                         deleteRecursive(itemDir);
+                    }
+
+                    if (i < urls.size() - 1) {
+                        try { Thread.sleep(500L); } catch (InterruptedException ignored) { }
                     }
                 }
 
@@ -1376,6 +1409,14 @@ public class MainActivity extends AppCompatActivity {
             startActivity(Intent.createChooser(share, chooserTitle));
         } catch (Exception e) {
             showError("Não foi possível compartilhar o arquivo: " + safeMessage(e));
+        }
+    }
+
+    private void copyToUriBlocking(File source, Uri uri) throws Exception {
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) throw new IllegalStateException("Não foi possível abrir o destino.");
+            copyStream(in, out);
         }
     }
 

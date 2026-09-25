@@ -608,6 +608,23 @@
                         android:textColor="@color/outline"
                         android:textSize="13sp"
                         android:visibility="gone" />
+
+                    <LinearLayout
+                        android:id="@+id/batchPackageActions"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/shareBatchPackageButton"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Compartilhar ZIP"
+                            app:cornerRadius="16dp" />
+                    </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
         </LinearLayout>
@@ -617,7 +634,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:gravity="center"
-            android:text="V3.2 pré-teste • processamento local no aparelho"
+            android:text="V3.3 pré-teste • processamento local no aparelho"
             android:textColor="@color/outline"
             android:textSize="12sp" />
 
