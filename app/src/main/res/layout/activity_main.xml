@@ -340,6 +340,7 @@
                             android:textSize="13sp"
                             android:visibility="gone" />
                     </LinearLayout>
+                </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
         </LinearLayout>
 
