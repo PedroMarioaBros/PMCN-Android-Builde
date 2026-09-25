@@ -10,7 +10,6 @@ permissions:
   contents: read
 
 env:
-  OPENXECHAIN_COMMIT: eed1fa65bf9577fd31625764b320a90182ea9ade
   OPENXECHAIN_PREFIX: ${{ github.workspace }}/openxechain-sysroot
 
 jobs:
@@ -23,23 +22,41 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang lld binutils git cmake make ninja-build python3 python3-yaml \
-            bzip2 gzip grep findutils sed tar unzip zip gawk zlib1g-dev zstd
+            clang lld binutils cmake make ninja-build python3 python3-yaml \
+            bzip2 gzip grep findutils sed tar unzip zip gawk zlib1g-dev zstd wget
 
-      - name: Fetch pinned OpenXeChain
+      - name: Fetch pinned OpenXeChain tarballs
         run: |
-          git config --global url."https://github.com/".insteadOf git@github.com:
-          git clone --recursive https://github.com/OpenXeChain/buildscript.git openxechain-src
-          git -C openxechain-src checkout --detach "$OPENXECHAIN_COMMIT"
-          git -C openxechain-src submodule sync --recursive
-          git -C openxechain-src submodule update --init --recursive
-          test "$(git -C openxechain-src rev-parse HEAD)" = "$OPENXECHAIN_COMMIT"
+          set -euo pipefail
+          SRC="${{ github.workspace }}/openxechain-src"
+          rm -rf "$SRC"
+          mkdir -p "$SRC"
+
+          fetch_tree() {
+            NAME="$1"
+            REPO="$2"
+            COMMIT="$3"
+            DEST="$4"
+            echo "FETCH_${NAME} ${COMMIT}"
+            mkdir -p "$DEST"
+            wget -q --tries=4 --timeout=60 \
+              "https://github.com/${REPO}/archive/${COMMIT}.tar.gz" \
+              -O "/tmp/${NAME}.tar.gz"
+            tar -xzf "/tmp/${NAME}.tar.gz" --strip-components=1 -C "$DEST"
+            rm -f "/tmp/${NAME}.tar.gz"
+          }
+
+          fetch_tree buildscript OpenXeChain/buildscript eed1fa65bf9577fd31625764b320a90182ea9ade "$SRC"
+          fetch_tree llvm OpenXeChain/llvm 890b83f6c8259a8899e182a5f7d9cf39c64131cc "$SRC/llvm"
+          fetch_tree newlib OpenXeChain/newlib f929633c27099d404e9cb5b2739a9c7f9b6afccc "$SRC/newlib"
+          fetch_tree synthxex OpenXeChain/synthxex 48d1453a55468aa2f8a211db0b20edd594ef5be3 "$SRC/synthxex"
+          fetch_tree xecorelib OpenXeChain/xecorelib c65d67e071357acade681f04c46ae9719797f239 "$SRC/xecorelib"
 
       - name: Build OpenXeChain
         run: |
           mkdir -p "$OPENXECHAIN_PREFIX"
           (
-            cd openxechain-src
+            cd "${{ github.workspace }}/openxechain-src"
             PREFIX="$OPENXECHAIN_PREFIX" PARALLEL=2 BUILD_TYPE=Release bash ./build-toolchain.sh
           )
 
