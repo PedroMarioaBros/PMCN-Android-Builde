@@ -238,7 +238,7 @@ public class MainActivity extends AppCompatActivity {
         setSpinnerItems(videoQualitySpinner, videoQualityLabels());
         setSpinnerItems(audioFormatSpinner, audioFormatLabels());
         setSpinnerItems(batchTypeSpinner, new String[]{
-                "Pacote completo para análise",
+                "Pacote completo para análise (capa + dados + VTT)",
                 "Somente transcrições (.VTT)",
                 "Baixar vídeos",
                 "Baixar áudios"
@@ -386,14 +386,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private JSONObject getVideoJson(String url) throws Exception {
-        YoutubeDLRequest request = new YoutubeDLRequest(url);
-        request.addOption("--skip-download");
-        request.addOption("--no-playlist");
-        request.addOption("--no-warnings");
-        request.addOption("--quiet");
-        request.addOption("--dump-single-json");
-        String out = YoutubeDL.getInstance().execute(request).getOut();
-        return jsonFromOutput(out, "Não foi possível interpretar as informações do vídeo.");
+        Exception last = null;
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                YoutubeDLRequest request = new YoutubeDLRequest(url);
+                request.addOption("--skip-download");
+                request.addOption("--no-playlist");
+                request.addOption("--no-warnings");
+                request.addOption("--quiet");
+                request.addOption("--socket-timeout", "20");
+                request.addOption("--extractor-retries", "3");
+                request.addOption("--dump-single-json");
+
+                String out = YoutubeDL.getInstance().execute(request).getOut();
+                return jsonFromOutput(out, "Não foi possível interpretar as informações do vídeo.");
+            } catch (Exception e) {
+                last = e;
+                if (!isTransientNetworkError(e) || attempt == 3) throw e;
+                Thread.sleep(1200L * attempt);
+            }
+        }
+
+        throw last == null ? new IllegalStateException("Falha ao consultar o vídeo.") : last;
+    }
+
+    private boolean isTransientNetworkError(Exception e) {
+        String low = safeMessage(e).toLowerCase(Locale.ROOT);
+        return low.contains("no address associated with hostname")
+                || low.contains("temporary failure in name resolution")
+                || low.contains("name or service not known")
+                || low.contains("unable to download api page")
+                || low.contains("connection reset")
+                || low.contains("connection aborted")
+                || low.contains("timed out")
+                || low.contains("timeout");
     }
 
     private JSONObject jsonFromOutput(String out, String error) throws Exception {
@@ -590,7 +617,19 @@ public class MainActivity extends AppCompatActivity {
         request.addOption("--no-warnings");
         request.addOption("-P", temp.getAbsolutePath());
         request.addOption("-o", "%(id)s.%(ext)s");
-        YoutubeDL.getInstance().execute(request);
+        Exception last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                YoutubeDL.getInstance().execute(request);
+                last = null;
+                break;
+            } catch (Exception e) {
+                last = e;
+                if (!isTransientNetworkError(e) || attempt == 3) throw e;
+                Thread.sleep(1200L * attempt);
+            }
+        }
+        if (last != null) throw last;
 
         File source = findFirstByExtension(temp, ".vtt");
         if (source == null) return null;
@@ -860,6 +899,10 @@ public class MainActivity extends AppCompatActivity {
                         row.put("erro", safeMessage(itemError));
                     }
                     indexEntries.put(row);
+
+                    if (i < urls.size() - 1) {
+                        try { Thread.sleep(500L); } catch (InterruptedException ignored) { }
+                    }
                 }
 
                 JSONObject index = new JSONObject();
@@ -928,35 +971,16 @@ public class MainActivity extends AppCompatActivity {
                     recreateDirectory(itemDir);
 
                     try {
-                        JSONObject info = getVideoJson(url);
-                        List<CaptionTrack> available = parseTracks(info);
-                        CaptionTrack track = preferredTrack(available);
-
-                        String id = info.optString("id", "video_" + number);
-                        String title = info.optString("title", "Vídeo " + number);
-                        row.put("id", id);
-                        row.put("title", title);
-                        row.put("channel", firstNonEmpty(info.optString("channel", ""), info.optString("uploader", "")));
-                        row.put("upload_date", info.optString("upload_date", ""));
-
-                        if (track == null) {
+                        File vtt = downloadPreferredPortugueseCaptionDirect(url, itemDir);
+                        if (vtt == null) {
                             row.put("status", "sem_transcricao");
-                            row.put("transcript_track", JSONObject.NULL);
                             withoutTranscript++;
                         } else {
-                            File vtt = downloadCaption(url, track, itemDir);
-                            if (vtt == null) throw new IllegalStateException("VTT não entregue pelo YouTube.");
-
-                            String fileName = String.format(Locale.US, "%03d - %s [%s].%s.vtt",
-                                    number,
-                                    sanitizeFilename(title, 90),
-                                    sanitizeFilename(id, 30),
-                                    sanitizeCode(track.code));
-
+                            String fileName = String.format(Locale.US, "%03d - %s",
+                                    number, safeDocumentName(vtt.getName()));
                             publishToFolder(vtt, destination, fileName);
                             row.put("status", "ok");
-                            row.put("transcript_track", track.code);
-                            row.put("transcript_type", track.source);
+                            row.put("arquivo", fileName);
                             ok++;
                         }
                     } catch (Exception itemError) {
@@ -968,6 +992,10 @@ public class MainActivity extends AppCompatActivity {
                     }
 
                     indexEntries.put(row);
+
+                    if (i < urls.size() - 1) {
+                        try { Thread.sleep(500L); } catch (InterruptedException ignored) { }
+                    }
                 }
 
                 JSONObject index = new JSONObject();
@@ -1004,6 +1032,45 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> showError(friendlyError(e)));
             }
         });
+    }
+
+    private File downloadPreferredPortugueseCaptionDirect(String url, File dir) throws Exception {
+        File vtt = downloadCaptionPatternDirect(url, dir, "pt.*-orig");
+        if (vtt != null) return vtt;
+
+        recreateDirectory(dir);
+        return downloadCaptionPatternDirect(url, dir, "pt,pt-BR,pt-PT");
+    }
+
+    private File downloadCaptionPatternDirect(String url, File dir, String langs) throws Exception {
+        Exception last = null;
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                YoutubeDLRequest request = new YoutubeDLRequest(url);
+                request.addOption("--skip-download");
+                request.addOption("--no-playlist");
+                request.addOption("--write-subs");
+                request.addOption("--write-auto-subs");
+                request.addOption("--sub-langs", langs);
+                request.addOption("--sub-format", "vtt");
+                request.addOption("--no-warnings");
+                request.addOption("--socket-timeout", "20");
+                request.addOption("--extractor-retries", "3");
+                request.addOption("-P", dir.getAbsolutePath());
+                request.addOption("-o", "%(title).100B [%(id)s].%(ext)s");
+
+                YoutubeDL.getInstance().execute(request);
+                return findFirstByExtension(dir, ".vtt");
+            } catch (Exception e) {
+                last = e;
+                if (!isTransientNetworkError(e) || attempt == 3) throw e;
+                Thread.sleep(1200L * attempt);
+            }
+        }
+
+        if (last != null) throw last;
+        return null;
     }
 
     private DocumentFile createTranscriptBatchFolder(Uri treeUri, String inputText) throws Exception {
@@ -1538,7 +1605,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateBatchFormatSpinner(int batchType) {
         if (batchType == 0) {
-            setSpinnerItems(batchFormatSpinner, new String[]{"Português preferido • original quando disponível"});
+            setSpinnerItems(batchFormatSpinner, new String[]{"ZIP único • cada vídeo em uma pasta completa"});
         } else if (batchType == 1) {
             setSpinnerItems(batchFormatSpinner, new String[]{"Português preferido • VTT original"});
         } else if (batchType == 2) {
