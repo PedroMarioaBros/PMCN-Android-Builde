@@ -57,7 +57,7 @@ jobs:
           mkdir -p "$OPENXECHAIN_PREFIX"
           (
             cd "${{ github.workspace }}/openxechain-src"
-            PREFIX="$OPENXECHAIN_PREFIX" PARALLEL=2 BUILD_TYPE=Release bash ./build-toolchain.sh
+            PREFIX="$OPENXECHAIN_PREFIX" PARALLEL=4 BUILD_TYPE=Release bash ./build-toolchain.sh
           )
 
       - name: Validate toolchain
