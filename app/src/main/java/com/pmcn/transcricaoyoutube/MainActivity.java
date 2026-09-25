@@ -165,7 +165,8 @@ public class MainActivity extends AppCompatActivity {
                             Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     );
                 } catch (Exception ignored) { }
-                processBatchMedia(uri);
+                if (pendingBatchType == 1) processBatchTranscripts(uri);
+                else processBatchMedia(uri);
             });
 
     @Override
@@ -238,6 +239,7 @@ public class MainActivity extends AppCompatActivity {
         setSpinnerItems(audioFormatSpinner, audioFormatLabels());
         setSpinnerItems(batchTypeSpinner, new String[]{
                 "Pacote completo para análise",
+                "Somente transcrições (.VTT)",
                 "Baixar vídeos",
                 "Baixar áudios"
         });
@@ -293,9 +295,21 @@ public class MainActivity extends AppCompatActivity {
             try {
                 YoutubeDL.getInstance().init(getApplicationContext());
                 FFmpeg.getInstance().init(getApplicationContext());
+
+                String motor = "motor local";
+                try {
+                    YoutubeDL.getInstance().updateYoutubeDL(getApplicationContext(), YoutubeDL.UpdateChannel._NIGHTLY);
+                    motor = YoutubeDL.getInstance().versionName(getApplicationContext());
+                } catch (Exception ignored) {
+                    try {
+                        motor = YoutubeDL.getInstance().versionName(getApplicationContext());
+                    } catch (Exception ignoredToo) { }
+                }
+
                 engineReady = true;
+                final String motorFinal = motor;
                 runOnUiThread(() -> {
-                    setBusy(false, "Pronto para analisar e baixar.");
+                    setBusy(false, "Pronto • yt-dlp " + motorFinal);
                     maybeAutoAnalyze();
                 });
             } catch (Exception e) {
@@ -703,6 +717,29 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private File downloadMedia(String url, boolean video, String option, File dir) throws Exception {
+        try {
+            return downloadMediaAttempt(url, video, option, dir, null, false);
+        } catch (Exception first) {
+            if (!isHttp403(first)) throw first;
+        }
+
+        runOnUiThread(() -> setStatus("HTTP 403 no fluxo padrão. Tentando rota HLS compatível..."));
+        recreateDirectory(dir);
+        try {
+            return downloadMediaAttempt(url, video, option, dir,
+                    "youtube:player_client=web_safari,default", true);
+        } catch (Exception second) {
+            if (!isHttp403(second)) throw second;
+        }
+
+        runOnUiThread(() -> setStatus("Tentando segunda rota compatível do YouTube..."));
+        recreateDirectory(dir);
+        return downloadMediaAttempt(url, video, option, dir,
+                "youtube:player_client=web_embedded,default", false);
+    }
+
+    private File downloadMediaAttempt(String url, boolean video, String option, File dir,
+                                      String extractorArgs, boolean preferMuxed) throws Exception {
         YoutubeDLRequest request = new YoutubeDLRequest(url);
         request.addOption("--no-playlist");
         request.addOption("--no-warnings");
@@ -712,18 +749,35 @@ public class MainActivity extends AppCompatActivity {
         request.addOption("-P", dir.getAbsolutePath());
         request.addOption("-o", "%(title).100B [%(id)s].%(ext)s");
 
+        if (extractorArgs != null) {
+            request.addOption("--extractor-args", extractorArgs);
+        }
+
         if (video) {
-            request.addOption("-f", videoFormatSelector(option));
+            request.addOption("-f", preferMuxed ? fallbackVideoFormatSelector(option) : videoFormatSelector(option));
             request.addOption("--merge-output-format", "mp4");
         } else {
-            request.addOption("-f", "bestaudio/best");
+            request.addOption("-f", preferMuxed ? "best/bestaudio" : "bestaudio/best");
             request.addOption("--extract-audio");
             request.addOption("--audio-format", option);
             request.addOption("--audio-quality", "0");
         }
 
         YoutubeDL.getInstance().execute(request);
-        return findMediaOutput(dir);
+        File out = findMediaOutput(dir);
+        if (out == null) throw new IllegalStateException("O download terminou sem gerar arquivo final.");
+        return out;
+    }
+
+    private boolean isHttp403(Exception e) {
+        return safeMessage(e).toLowerCase(Locale.ROOT).contains("403");
+    }
+
+    private String fallbackVideoFormatSelector(String key) {
+        if ("1080".equals(key)) return "best[height<=1080]/best";
+        if ("720".equals(key)) return "best[height<=720]/best";
+        if ("480".equals(key)) return "best[height<=480]/best";
+        return "best";
     }
 
     private String videoFormatSelector(String key) {
@@ -843,6 +897,177 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void processBatchTranscripts(Uri treeUri) {
+        if (pendingBatchText == null) return;
+        setBusy(true, "Preparando transcrições do lote...");
+
+        executor.submit(() -> {
+            try {
+                List<String> urls = expandBatchLinks(pendingBatchText);
+                if (urls.isEmpty()) throw new IllegalStateException("Nenhum vídeo válido foi encontrado.");
+                if (urls.size() > 100) {
+                    throw new IllegalStateException("Pré-teste limitado a 100 vídeos por lote.");
+                }
+
+                DocumentFile destination = createTranscriptBatchFolder(treeUri, pendingBatchText);
+                JSONArray indexEntries = new JSONArray();
+                int ok = 0;
+                int withoutTranscript = 0;
+                List<String> errors = new ArrayList<>();
+
+                for (int i = 0; i < urls.size(); i++) {
+                    String url = urls.get(i);
+                    final int number = i + 1;
+                    runOnUiThread(() -> setStatus("Transcrição " + number + " de " + urls.size() + "..."));
+
+                    JSONObject row = new JSONObject();
+                    row.put("ordem", number);
+                    row.put("url", url);
+
+                    File itemDir = new File(workRoot(), "batch_caption_item");
+                    recreateDirectory(itemDir);
+
+                    try {
+                        JSONObject info = getVideoJson(url);
+                        List<CaptionTrack> available = parseTracks(info);
+                        CaptionTrack track = preferredTrack(available);
+
+                        String id = info.optString("id", "video_" + number);
+                        String title = info.optString("title", "Vídeo " + number);
+                        row.put("id", id);
+                        row.put("title", title);
+                        row.put("channel", firstNonEmpty(info.optString("channel", ""), info.optString("uploader", "")));
+                        row.put("upload_date", info.optString("upload_date", ""));
+
+                        if (track == null) {
+                            row.put("status", "sem_transcricao");
+                            row.put("transcript_track", JSONObject.NULL);
+                            withoutTranscript++;
+                        } else {
+                            File vtt = downloadCaption(url, track, itemDir);
+                            if (vtt == null) throw new IllegalStateException("VTT não entregue pelo YouTube.");
+
+                            String fileName = String.format(Locale.US, "%03d - %s [%s].%s.vtt",
+                                    number,
+                                    sanitizeFilename(title, 90),
+                                    sanitizeFilename(id, 30),
+                                    sanitizeCode(track.code));
+
+                            publishToFolder(vtt, destination, fileName);
+                            row.put("status", "ok");
+                            row.put("transcript_track", track.code);
+                            row.put("transcript_type", track.source);
+                            ok++;
+                        }
+                    } catch (Exception itemError) {
+                        row.put("status", "erro");
+                        row.put("erro", safeMessage(itemError));
+                        errors.add(number + ": " + safeMessage(itemError));
+                    } finally {
+                        deleteRecursive(itemDir);
+                    }
+
+                    indexEntries.put(row);
+                }
+
+                JSONObject index = new JSONObject();
+                index.put("gerado_em", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(new Date()));
+                index.put("total", urls.size());
+                index.put("transcricoes_salvas", ok);
+                index.put("sem_transcricao", withoutTranscript);
+                index.put("videos", indexEntries);
+
+                File indexFile = new File(workRoot(), "indice-transcricoes.json");
+                writeUtf8(indexFile, index.toString(2));
+                publishToFolder(indexFile, destination, "indice-transcricoes.json");
+                indexFile.delete();
+
+                int finalOk = ok;
+                int finalWithoutTranscript = withoutTranscript;
+                runOnUiThread(() -> {
+                    setBusy(false, "Lote de transcrições concluído.");
+                    StringBuilder summary = new StringBuilder();
+                    summary.append(finalOk).append(" de ").append(urls.size()).append(" VTTs salvos.");
+                    if (finalWithoutTranscript > 0) {
+                        summary.append("\nSem transcrição disponível: ").append(finalWithoutTranscript);
+                    }
+                    if (!errors.isEmpty()) {
+                        summary.append("\nFalhas: ").append(errors.size());
+                        for (int i = 0; i < Math.min(3, errors.size()); i++) {
+                            summary.append("\n• ").append(errors.get(i));
+                        }
+                    }
+                    batchResultInfo.setText(summary.toString());
+                    batchResultInfo.setVisibility(View.VISIBLE);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> showError(friendlyError(e)));
+            }
+        });
+    }
+
+    private DocumentFile createTranscriptBatchFolder(Uri treeUri, String inputText) throws Exception {
+        DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
+        if (root == null || !root.canWrite()) {
+            throw new IllegalStateException("A pasta escolhida não permite gravação.");
+        }
+
+        String folderName;
+        List<String> inputUrls = extractUrls(inputText);
+        if (inputUrls.size() == 1 && isLikelyPlaylist(inputUrls.get(0))) {
+            String playlistTitle = playlistTitle(inputUrls.get(0));
+            folderName = "Playlist - " + sanitizeFilename(
+                    playlistTitle.isEmpty() ? "Transcrições" : playlistTitle, 80);
+        } else {
+            String stamp = new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new Date());
+            folderName = "Lote de Transcrições - " + stamp;
+        }
+
+        DocumentFile existing = root.findFile(folderName);
+        if (existing != null && existing.isDirectory()) return existing;
+
+        DocumentFile created = root.createDirectory(folderName);
+        if (created == null) throw new IllegalStateException("Não foi possível criar a pasta " + folderName);
+        return created;
+    }
+
+    private String playlistTitle(String url) {
+        try {
+            YoutubeDLRequest request = new YoutubeDLRequest(url);
+            request.addOption("--flat-playlist");
+            request.addOption("--playlist-end", "1");
+            request.addOption("--dump-single-json");
+            request.addOption("--no-warnings");
+            request.addOption("--quiet");
+            JSONObject json = jsonFromOutput(
+                    YoutubeDL.getInstance().execute(request).getOut(),
+                    "Não foi possível ler a playlist."
+            );
+            return json.optString("title", "");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private void publishToFolder(File source, DocumentFile folder, String desiredName) throws Exception {
+        if (folder == null || !folder.canWrite()) {
+            throw new IllegalStateException("A pasta escolhida não permite gravação.");
+        }
+
+        String name = safeDocumentName(desiredName);
+        DocumentFile old = folder.findFile(name);
+        if (old != null) old.delete();
+
+        DocumentFile target = folder.createFile(mimeForFile(source), name);
+        if (target == null) throw new IllegalStateException("Não foi possível criar " + name);
+
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             OutputStream out = getContentResolver().openOutputStream(target.getUri())) {
+            if (out == null) throw new IllegalStateException("Não foi possível abrir o arquivo de destino.");
+            copyStream(in, out);
+        }
+    }
+
     private void processBatchMedia(Uri treeUri) {
         if (pendingBatchText == null) return;
         setBusy(true, "Preparando playlist/lote...");
@@ -857,7 +1082,7 @@ public class MainActivity extends AppCompatActivity {
 
                 int ok = 0;
                 List<String> errors = new ArrayList<>();
-                boolean video = pendingBatchType == 1;
+                boolean video = pendingBatchType == 2;
 
                 for (int i = 0; i < urls.size(); i++) {
                     String url = urls.get(i);
@@ -979,20 +1204,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void publishToTree(File source, Uri treeUri) throws Exception {
         DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
-        if (root == null || !root.canWrite()) throw new IllegalStateException("A pasta escolhida não permite gravação.");
-
-        String name = safeDocumentName(source.getName());
-        DocumentFile old = root.findFile(name);
-        if (old != null) old.delete();
-
-        DocumentFile target = root.createFile(mimeForFile(source), name);
-        if (target == null) throw new IllegalStateException("Não foi possível criar " + name);
-
-        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
-             OutputStream out = getContentResolver().openOutputStream(target.getUri())) {
-            if (out == null) throw new IllegalStateException("Não foi possível abrir o arquivo de destino.");
-            copyStream(in, out);
-        }
+        publishToFolder(source, root, source.getName());
     }
 
     private void loadThumbnailPreview(String thumbnailUrl, String expectedUrl) {
@@ -1233,6 +1445,9 @@ public class MainActivity extends AppCompatActivity {
         if (low.contains("requested format is not available")) {
             return "A qualidade/formato escolhido não está disponível para este vídeo.";
         }
+        if (low.contains("403")) {
+            return "O YouTube recusou o fluxo de mídia (HTTP 403). O app tentou rotas alternativas, mas este vídeo ainda exige uma autorização de reprodução que o YouTube não forneceu.";
+        }
         return "Erro: " + m;
     }
 
@@ -1325,6 +1540,8 @@ public class MainActivity extends AppCompatActivity {
         if (batchType == 0) {
             setSpinnerItems(batchFormatSpinner, new String[]{"Português preferido • original quando disponível"});
         } else if (batchType == 1) {
+            setSpinnerItems(batchFormatSpinner, new String[]{"Português preferido • VTT original"});
+        } else if (batchType == 2) {
             setSpinnerItems(batchFormatSpinner, videoQualityLabels());
         } else {
             setSpinnerItems(batchFormatSpinner, audioFormatLabels());
@@ -1332,8 +1549,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String batchFormatKey(int batchType, int pos) {
-        if (batchType == 1) return videoQualityKey(pos);
-        if (batchType == 2) return audioFormatKey(pos);
+        if (batchType == 2) return videoQualityKey(pos);
+        if (batchType == 3) return audioFormatKey(pos);
+        if (batchType == 1) return "vtt";
         return "analysis";
     }
 
