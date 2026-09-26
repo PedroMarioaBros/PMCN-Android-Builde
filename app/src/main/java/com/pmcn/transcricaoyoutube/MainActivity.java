@@ -978,7 +978,10 @@ public class MainActivity extends AppCompatActivity {
                     throw new IllegalStateException("Pré-teste limitado a 100 vídeos por lote.");
                 }
 
-                DocumentFile destination = createTranscriptBatchFolder(treeUri, pendingBatchText);
+                DocumentFile destination = DocumentFile.fromTreeUri(this, treeUri);
+                if (destination == null || !destination.canWrite()) {
+                    throw new IllegalStateException("A pasta escolhida não permite gravação.");
+                }
                 JSONArray indexEntries = new JSONArray();
                 int ok = 0;
                 int withoutTranscript = 0;
@@ -1023,18 +1026,6 @@ public class MainActivity extends AppCompatActivity {
                         try { Thread.sleep(500L); } catch (InterruptedException ignored) { }
                     }
                 }
-
-                JSONObject index = new JSONObject();
-                index.put("gerado_em", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(new Date()));
-                index.put("total", urls.size());
-                index.put("transcricoes_salvas", ok);
-                index.put("sem_transcricao", withoutTranscript);
-                index.put("videos", indexEntries);
-
-                File indexFile = new File(workRoot(), "indice-transcricoes.json");
-                writeUtf8(indexFile, index.toString(2));
-                publishToFolder(indexFile, destination, "indice-transcricoes.json");
-                indexFile.delete();
 
                 int finalOk = ok;
                 int finalWithoutTranscript = withoutTranscript;
