@@ -83,7 +83,7 @@ class MainActivity : Activity() {
     @Deprecated("Legacy document picker result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
-        if(requestCode==42 && resultCode==RESULT_OK) setAudio(data?.data)
+        if(requestCode==42 && resultCode==RESULT_OK) { setAudio(data?.data); if (audio != null) processAudio() }
     }
     private fun receive(intent: Intent?) {
         if(intent?.action != Intent.ACTION_SEND) return
@@ -127,7 +127,7 @@ class MainActivity : Activity() {
     private fun setAudio(uri: Uri?) {
         audio=uri
         if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
-        try { contentResolver.openInputStream(uri)?.use { it.read() }
+        try { contentResolver.openInputStream(uri)?.use { /* Validate read access without loading audio into memory. */ }
             status.text="Áudio pronto para processar"
         } catch(e:Exception) { status.text="Não foi possível abrir o áudio: ${e.localizedMessage}" }
 
