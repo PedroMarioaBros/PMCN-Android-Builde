@@ -1,0 +1,20 @@
+
+br.com.pmcn.transcritor.TranscriptionTest:.
+Failure in testOpusPortugueseOffline:
+junit.framework.AssertionFailedError: Texto reconhecido:  Olá! Este é um teste de transcrição de voz em texto. Estamos falando muito importante o que é. O aplicativo funcional se eninternaix.
+
+	at br.com.pmcn.transcritor.TranscriptionTest.testOpusPortugueseOffline(TranscriptionTest.kt:20)
+	at android.test.InstrumentationTestCase.runMethod(InstrumentationTestCase.java:220)
+	at android.test.InstrumentationTestCase.runTest(InstrumentationTestCase.java:205)
+	at android.test.AndroidTestRunner.runTest(AndroidTestRunner.java:195)
+	at android.test.AndroidTestRunner.runTest(AndroidTestRunner.java:181)
+	at android.test.InstrumentationTestRunner.onStart(InstrumentationTestRunner.java:563)
+	at android.app.Instrumentation$InstrumentationThread.run(Instrumentation.java:2361)
+.
+Test results for InstrumentationTestRunner=..F.
+Time: 346.275
+
+FAILURES!!!
+Tests run: 3,  Failures: 1,  Errors: 0
+
+
