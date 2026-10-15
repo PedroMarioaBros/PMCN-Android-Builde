@@ -22,12 +22,20 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - name: Instalar SDK nativo Android
-        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018"
+        id: sdk
+        shell: bash
+        run: |
+          set -o pipefail
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018" 2>&1 | tee sdk-install.log
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
       - name: Obter motor Whisper.cpp
-        run: git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper
+        id: whisper
+        shell: bash
+        run: |
+          set -o pipefail
+          git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper 2>&1 | tee whisper-clone.log
       - name: Compilar e registrar erros
         id: compile
         shell: bash
@@ -44,9 +52,19 @@ jobs:
             echo "Falha de compilação do Voz em Texto."
             echo
             echo "Commit: ${{ github.sha }}"
+            echo "Execução: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo
             echo '~~~'
-            if [ -f build.log ]; then tail -n 120 build.log; else echo "Falha antes da compilação Gradle: ver etapas do workflow."; fi
+            for file in sdk-install.log whisper-clone.log build.log; do
+              if [ -f "$file" ]; then
+                echo "===== $file ====="
+                tail -n 140 "$file"
+              fi
+            done
+            echo "===== Etapas ====="
+            echo "SDK: ${{ steps.sdk.outcome }}"
+            echo "Whisper: ${{ steps.whisper.outcome }}"
+            echo "Gradle: ${{ steps.compile.outcome }}"
             echo '~~~'
           } > build-failure.md
           gh issue create --repo "${{ github.repository }}" --title "Diagnóstico automático APK ${{ github.run_number }}" --body-file build-failure.md
