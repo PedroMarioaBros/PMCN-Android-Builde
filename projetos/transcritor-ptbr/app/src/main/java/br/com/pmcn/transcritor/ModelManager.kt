@@ -6,22 +6,22 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object ModelManager {
-    private const val MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-    private const val MODEL_SHA1 = "465707469ff3a37a2b9b8d8f89f2f99de7299dac"
+    private const val MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin"
+    private const val MODEL_SHA256 = "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"
     private fun valid(file: File): Boolean {
-        if (!file.exists() || file.length() < 100_000_000) return false
-        val digest = java.security.MessageDigest.getInstance("SHA-1")
+        if (!file.exists() || file.length() < 500_000_000) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
         file.inputStream().buffered().use { input ->
             val buffer = ByteArray(65536)
             while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) } == MODEL_SHA1
+        return digest.digest().joinToString("") { "%02x".format(it) } == MODEL_SHA256
     }
     @Synchronized fun ensure(context: Context, progress: (String) -> Unit): File {
-        val model = File(context.filesDir, "ggml-base.bin")
+        val model = File(context.filesDir, "ggml-medium-q5_0.bin")
         progress("Verificando modelo local…")
         if (valid(model)) return model
-        val partial = File(context.filesDir, "ggml-base.bin.part")
+        val partial = File(context.filesDir, "ggml-medium-q5_0.bin.part")
         try {
             progress("Baixando modelo gratuito (uma única vez)…")
             val conn = URL(MODEL_URL).openConnection() as HttpURLConnection
@@ -37,7 +37,7 @@ object ModelManager {
                     while (input.read(buf).also { n=it } >= 0) {
                         if(n==0) continue
                         out.write(buf,0,n); total+=n
-                        if(total % (8L*1024*1024) < n) progress("Modelo: ${total/(1024*1024)} MB recebidos")
+                        if(total % (8L*1024*1024) < n) progress("Whisper Medium: ${total/(1024*1024)} MiB de aproximadamente 514 MiB")
                     }
                 } }
             } finally { conn.disconnect() }
