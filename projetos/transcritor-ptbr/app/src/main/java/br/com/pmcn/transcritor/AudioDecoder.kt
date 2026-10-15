@@ -57,7 +57,7 @@ object AudioDecoder {
                             val f = codec.outputFormat
                             sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                            val encoding = f.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            val encoding = if (f.containsKey(MediaFormat.KEY_PCM_ENCODING)) f.getInteger(MediaFormat.KEY_PCM_ENCODING) else android.media.AudioFormat.ENCODING_PCM_16BIT
                             if (encoding != android.media.AudioFormat.ENCODING_PCM_16BIT) error("PCM não suportado: $encoding")
                         } else if (index >= 0) {
                             val output = codec.getOutputBuffer(index)!!
