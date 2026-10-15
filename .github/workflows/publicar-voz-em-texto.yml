@@ -1,0 +1,34 @@
+name: Publicar Voz em Texto
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/publicar-voz-em-texto.yml'
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obter APK validado e publicar versão de testes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir entrega
+          gh run download 38819978397 --repo '${{ github.repository }}' --name Voz-em-Texto-APK --dir entrega
+          cd entrega
+          sha256sum -c SHA256SUMS.txt
+          echo '7cc8584bf996b9674d5e28d4ccb129e8599b5ab08ac9873d0dde441dff2a9ec7  Voz-em-Texto-0.3.0.apk' | sha256sum -c -
+          cat > notas.md <<'EOF'
+          APK Android com Whisper Base local em português. Modelo gratuito de aproximadamente 148 MB baixado no primeiro uso. Sem envio de áudios a servidores.
+
+          Validado em emulador Android 13: assinatura, instalação, abertura, transcrição offline de OGG/Opus, compartilhamento via URI e cópia do texto.
+
+          Resultado da suíte: 2 testes passaram; 1 falhou porque a palavra "português" não foi reconhecida literalmente na fala sintética. O áudio foi transcrito, mas houve erros de reconhecimento. A falha de precisão está registrada, não foi tratada como aprovação completa. Ainda não testado em Moto G52 físico nem com WhatsApp real.
+
+          Evidência: https://github.com/PedroMarioaBros/PMCN-Android-Builde/actions/runs/38819978397
+          Código e instruções: projetos/transcritor-ptbr/README.md
+          EOF
+          gh release create voz-em-texto-0.3.0 Voz-em-Texto-0.3.0.apk SHA256SUMS.txt --repo '${{ github.repository }}' --target ec0d509c326f706b70b72f0ff524a7a1c1c887cf --prerelease --title 'Voz em Texto 0.3.0 — versão de testes' --notes-file notas.md
