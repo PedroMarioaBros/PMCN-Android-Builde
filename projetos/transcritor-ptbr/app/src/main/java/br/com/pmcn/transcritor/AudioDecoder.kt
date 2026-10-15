@@ -89,7 +89,7 @@ object AudioDecoder {
                         val pos = i.toDouble() * sampleRate / 16000.0
                         val left = pos.toInt().coerceIn(0,mono.lastIndex)
                         val right = (left+1).coerceAtMost(mono.lastIndex)
-                        (mono[left] * (1-(pos-left)) + mono[right] * (pos-left)).toFloat()
+                        (mono[left].toDouble() * (1.0-(pos-left)) + mono[right].toDouble() * (pos-left)).toFloat()
                     }
                 } finally { codec.stop(); codec.release() }
             } finally { extractor.release() }
