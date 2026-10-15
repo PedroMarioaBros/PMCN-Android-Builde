@@ -92,6 +92,7 @@ class MainActivity : Activity() {
             intent.getParcelableExtra(Intent.EXTRA_STREAM,Uri::class.java)
         else intent.getParcelableExtra(Intent.EXTRA_STREAM)
         setAudio(uri)
+        if (uri != null) processAudio()
     }
     private fun processAudio() {
         val selected = audio ?: run {
