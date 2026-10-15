@@ -15,6 +15,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var result: TextView
     private var audio: Uri? = null
+    private var busy = false
     private val green = Color.rgb(23,107,85)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
@@ -61,6 +62,12 @@ class MainActivity : Activity() {
         output.addView(label("TRANSCRIÇÃO",12f,green,true))
         result=label("O texto transcrito aparecerá aqui quando o motor de reconhecimento estiver integrado.",15f,Color.rgb(90,105,98))
         result.setPadding(0,dp(16),0,dp(16)); output.addView(result)
+        val transcribe = Button(this).apply {
+            text = "Transcrever áudio"; isAllCaps = false
+            setTextColor(Color.WHITE); background = rounded(green,14)
+            setOnClickListener { processAudio() }
+        }
+        output.addView(transcribe,LinearLayout.LayoutParams(-1,dp(52)))
         val copy=Button(this).apply { text="Copiar texto"; isAllCaps=false
             setOnClickListener {
                 if (result.tag != true) { Toast.makeText(this@MainActivity,"Ainda não há transcrição para copiar.",Toast.LENGTH_SHORT).show(); return@setOnClickListener }
@@ -86,12 +93,42 @@ class MainActivity : Activity() {
         else intent.getParcelableExtra(Intent.EXTRA_STREAM)
         setAudio(uri)
     }
+    private fun processAudio() {
+        val selected = audio ?: run {
+            Toast.makeText(this,"Selecione um áudio primeiro",Toast.LENGTH_SHORT).show(); return
+        }
+        if (busy) return
+        busy = true
+        result.tag = false
+        result.text = "Preparando transcrição…"
+        Thread {
+            try {
+                val model = ModelManager.ensure(this) { message ->
+                    runOnUiThread { status.text = message }
+                }
+                runOnUiThread { status.text = "Decodificando áudio…" }
+                val pcm = AudioDecoder.decode(this,selected)
+                runOnUiThread { status.text = "Transcrevendo em português…" }
+                val text = WhisperBridge.transcribe(model.absolutePath,pcm).trim()
+                runOnUiThread {
+                    result.text = text.ifBlank { "Nenhuma fala reconhecida." }
+                    result.tag = text.isNotBlank() && !text.startsWith("ERRO:")
+                    status.text = "Processamento concluído"
+                }
+            } catch (e:Throwable) {
+                runOnUiThread {
+                    status.text = "Falha ao processar áudio"
+                    result.text = e.message ?: e.javaClass.simpleName
+                }
+            } finally { busy = false }
+        }.start()
+    }
     private fun setAudio(uri: Uri?) {
         audio=uri
         if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
         try { contentResolver.openInputStream(uri)?.use { it.read() }
             status.text="Áudio pronto para processar"
         } catch(e:Exception) { status.text="Não foi possível abrir o áudio: ${e.localizedMessage}" }
-        // Motor Whisper.cpp e decodificação OPUS ainda não implementados.
+
     }
 }
