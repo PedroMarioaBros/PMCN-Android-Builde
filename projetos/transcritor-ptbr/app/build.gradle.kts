@@ -1,5 +1,8 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
+    useLibrary("android.test.runner")
+    useLibrary("android.test.base")
+    useLibrary("android.test.mock")
     namespace = "br.com.pmcn.transcritor"
     compileSdk = 35
     ndkVersion = "27.2.12479018"

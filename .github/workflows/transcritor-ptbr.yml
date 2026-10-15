@@ -39,7 +39,7 @@ jobs:
           curl -L --fail --retry 3 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin' -o /tmp/ggml-base.bin
           echo '465707469ff3a37a2b9b8d8f89f2f99de7299dac  /tmp/ggml-base.bin' | sha1sum -c -
       - name: Compilar APK e testes
-        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon > build.log 2>&1 || { tail -150 build.log; exit 1; }
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon > build.log 2>&1 || { grep -n -E "(^e:|error:|What went wrong|Execution failed)" build.log; tail -50 build.log; exit 1; }
       - name: Validar assinatura e motor
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
