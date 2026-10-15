@@ -34,6 +34,7 @@ object AudioDecoder {
                     codec.start()
                     var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    require(sampleRate > 0 && channels > 0) { "Formato de áudio inválido" }
                     val sink = pcm.outputStream().buffered()
                     var sourceIndex = 0L
                     var nextPosition = 0.0
@@ -65,6 +66,7 @@ object AudioDecoder {
                             val f = codec.outputFormat
                             sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            require(sampleRate > 0 && channels > 0) { "Formato PCM inválido" }
                             val encoding = if (f.containsKey(MediaFormat.KEY_PCM_ENCODING)) f.getInteger(MediaFormat.KEY_PCM_ENCODING) else android.media.AudioFormat.ENCODING_PCM_16BIT
                             if (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_FLOAT) error("PCM não suportado: $encoding")
                             pcmEncoding = encoding
