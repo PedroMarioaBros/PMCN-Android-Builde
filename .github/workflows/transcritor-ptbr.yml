@@ -36,21 +36,21 @@ jobs:
           mkdir -p app/src/androidTest/assets
           espeak-ng -v pt-br -s 135 -w /tmp/teste.wav 'Olá. Este é um teste de transcrição de voz em texto. Estamos falando em português. O aplicativo funciona sem internet.'
           ffmpeg -y -i /tmp/teste.wav -ar 48000 -c:a libopus app/src/androidTest/assets/teste.opus
-          curl -L --fail --retry 3 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin' -o /tmp/ggml-base.bin
-          echo '465707469ff3a37a2b9b8d8f89f2f99de7299dac  /tmp/ggml-base.bin' | sha1sum -c -
+          curl -L --fail --retry 3 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin' -o /tmp/ggml-medium-q5_0.bin
+          echo '19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f  /tmp/ggml-medium-q5_0.bin' | sha256sum -c -
       - name: Compilar APK e testes
         run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon > build.log 2>&1 || { grep -n -E "(^e:|error:|What went wrong|Execution failed)" build.log; tail -50 build.log; exit 1; }
       - name: Validar assinatura e motor
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libvozemtexto.so'
-          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-0.3.0.apk
-          sha256sum Voz-em-Texto-0.3.0.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-0.4.0.apk
+          sha256sum Voz-em-Texto-0.4.0.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: Voz-em-Texto-APK
           path: |
-            projetos/transcritor-ptbr/Voz-em-Texto-0.3.0.apk
+            projetos/transcritor-ptbr/Voz-em-Texto-0.4.0.apk
             projetos/transcritor-ptbr/SHA256SUMS.txt
           if-no-files-found: error
       - name: Habilitar KVM
@@ -70,7 +70,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "voz-em-texto-0.3.0-${{ github.run_number }}" Voz-em-Texto-0.3.0.apk SHA256SUMS.txt --repo '${{ github.repository }}' --target '${{ github.sha }}' --title 'Voz em Texto 0.3.0' --notes 'APK de teste assinado. Whisper Base local, português, seleção e compartilhamento de áudio. Compilação e teste de transcrição OGG/Opus em emulador Android 13. Ainda não testado em Moto G52 físico.'
+          gh release create "voz-em-texto-0.4.0-${{ github.run_number }}" Voz-em-Texto-0.4.0.apk SHA256SUMS.txt --repo '${{ github.repository }}' --target '${{ github.sha }}' --title 'Voz em Texto 0.4.0' --notes 'APK de teste assinado. Whisper Medium Q5_0 local, português, seleção e compartilhamento de áudio. Compilação e teste de transcrição OGG/Opus em emulador Android 13. Ainda não testado em Moto G52 físico.'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
