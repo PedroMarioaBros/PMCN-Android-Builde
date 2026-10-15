@@ -20,6 +20,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Verificar ambiente Android
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -la /usr/local/lib/android/sdk/cmdline-tools/latest/bin/ || true
       - name: Instalar SDK nativo Android
         id: sdk
         shell: bash
