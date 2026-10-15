@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import java.io.File
 import java.nio.ByteOrder
+import android.media.AudioFormat
 import kotlin.math.max
 
 object AudioDecoder {
@@ -32,6 +33,7 @@ object AudioDecoder {
                     var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                     val mono = ArrayList<Float>()
+                    var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
                     val info = MediaCodec.BufferInfo()
                     var inputDone = false
                     var outputDone = false
@@ -58,17 +60,23 @@ object AudioDecoder {
                             sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                             val encoding = if (f.containsKey(MediaFormat.KEY_PCM_ENCODING)) f.getInteger(MediaFormat.KEY_PCM_ENCODING) else android.media.AudioFormat.ENCODING_PCM_16BIT
-                            if (encoding != android.media.AudioFormat.ENCODING_PCM_16BIT) error("PCM não suportado: $encoding")
+                            if (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_FLOAT) error("PCM não suportado: $encoding")
+                            pcmEncoding = encoding
                         } else if (index >= 0) {
                             val output = codec.getOutputBuffer(index)!!
                             output.position(info.offset)
                             output.limit(info.offset + info.size)
-                            val shorts = output.slice().order(ByteOrder.nativeOrder()).asShortBuffer()
-                            val frame = ShortArray(shorts.remaining())
-                            shorts.get(frame)
+                            val chunk = output.slice().order(ByteOrder.nativeOrder())
+                            val frame: FloatArray = if (pcmEncoding == AudioFormat.ENCODING_PCM_FLOAT) {
+                                val floats = chunk.asFloatBuffer()
+                                FloatArray(floats.remaining()).also { floats.get(it) }
+                            } else {
+                                val shorts = chunk.asShortBuffer()
+                                FloatArray(shorts.remaining()) { shorts.get().toFloat() / 32768f }
+                            }
                             for (i in frame.indices step max(1,channels)) {
                                 var sum = 0f
-                                for (c in 0 until channels) if (i+c < frame.size) sum += frame[i+c] / 32768f
+                                for (c in 0 until channels) if (i+c < frame.size) sum += frame[i+c]
                                 mono.add(sum/channels)
                             }
                             codec.releaseOutputBuffer(index,false)
