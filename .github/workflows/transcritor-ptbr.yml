@@ -35,7 +35,7 @@ jobs:
           set -o pipefail
           gradle :app:assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
       - name: Publicar diagnóstico automaticamente
-        if: failure() && steps.compile.outcome == 'failure'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -46,7 +46,7 @@ jobs:
             echo "Commit: ${{ github.sha }}"
             echo
             echo '~~~'
-            tail -n 120 build.log
+            if [ -f build.log ]; then tail -n 120 build.log; else echo "Falha antes da compilação Gradle: ver etapas do workflow."; fi
             echo '~~~'
           } > build-failure.md
           gh issue create --repo "${{ github.repository }}" --title "Diagnóstico automático APK ${{ github.run_number }}" --body-file build-failure.md
