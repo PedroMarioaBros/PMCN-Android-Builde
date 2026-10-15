@@ -15,7 +15,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var result: TextView
     private var audio: Uri? = null
-    private var busy = false
+    @Volatile private var busy = false
     private val green = Color.rgb(23,107,85)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
@@ -31,7 +31,7 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         val page = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL
             setPadding(dp(24),dp(32),dp(24),dp(20)); setBackgroundColor(Color.rgb(245,248,246)) }
-        val scroll = ScrollView(this).apply { fillViewport=true; addView(page) }
+        val scroll = ScrollView(this).apply { isFillViewport=true; addView(page) }
         setContentView(scroll)
         val header = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         val mark = ImageView(this).apply { setImageResource(R.drawable.ic_brand); background=rounded(green,16) }
@@ -54,13 +54,14 @@ class MainActivity : Activity() {
         val choose = Button(this).apply { text="Escolher arquivo de áudio"; setTextColor(Color.WHITE)
             background=rounded(green,14); isAllCaps=false
             setOnClickListener { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE); type="audio/*" },42) } }
+                addCategory(Intent.CATEGORY_OPENABLE); type="*/*"; putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("audio/*", "application/ogg")) },42) } }
         card.addView(choose,LinearLayout.LayoutParams(-1,dp(52)))
         val output=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(22),dp(20),dp(22))
             background=rounded(Color.WHITE,20); elevation=dp(2).toFloat() }
         page.addView(output,LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(18) })
         output.addView(label("TRANSCRIÇÃO",12f,green,true))
-        result=label("O texto transcrito aparecerá aqui quando o motor de reconhecimento estiver integrado.",15f,Color.rgb(90,105,98))
+        result=label("Selecione ou compartilhe um áudio. A transcrição completa aparecerá aqui.",15f,Color.rgb(90,105,98))
+        result.setTextIsSelectable(true)
         result.setPadding(0,dp(16),0,dp(16)); output.addView(result)
         val transcribe = Button(this).apply {
             text = "Transcrever áudio"; isAllCaps = false
@@ -99,6 +100,7 @@ class MainActivity : Activity() {
             Toast.makeText(this,"Selecione um áudio primeiro",Toast.LENGTH_SHORT).show(); return
         }
         if (busy) return
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         busy = true
         result.tag = false
         result.text = "Preparando transcrição…"
@@ -110,7 +112,8 @@ class MainActivity : Activity() {
                 runOnUiThread { status.text = "Decodificando áudio…" }
                 val pcm = AudioDecoder.decode(this,selected)
                 runOnUiThread { status.text = "Transcrevendo em português…" }
-                val text = WhisperBridge.transcribe(model.absolutePath,pcm).trim()
+                val text = try { WhisperBridge.transcribe(model.absolutePath,pcm.absolutePath).trim() } finally { pcm.delete() }
+                if (text.startsWith("ERRO:")) error(text.removePrefix("ERRO:"))
                 runOnUiThread {
                     result.text = text.ifBlank { "Nenhuma fala reconhecida." }
                     result.tag = text.isNotBlank() && !text.startsWith("ERRO:")
@@ -119,12 +122,13 @@ class MainActivity : Activity() {
             } catch (e:Throwable) {
                 runOnUiThread {
                     status.text = "Falha ao processar áudio"
-                    result.text = e.message ?: e.javaClass.simpleName
+                    result.text = if (e is OutOfMemoryError) "Memória insuficiente. Feche outros aplicativos e tente novamente com um áudio menor." else e.message ?: "Não foi possível processar este arquivo."
                 }
-            } finally { busy = false }
+            } finally { runOnUiThread { busy = false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } }
         }.start()
     }
     private fun setAudio(uri: Uri?) {
+        if (busy) { Toast.makeText(this,"Aguarde a transcrição atual terminar.",Toast.LENGTH_SHORT).show(); return }
         audio=uri
         if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
         try { contentResolver.openInputStream(uri)?.use { /* Validate read access without loading audio into memory. */ }

@@ -7,9 +7,20 @@ import java.net.URL
 
 object ModelManager {
     private const val MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-    fun ensure(context: Context, progress: (String) -> Unit): File {
+    private const val MODEL_SHA1 = "465707469ff3a37a2b9b8d8f89f2f99de7299dac"
+    private fun valid(file: File): Boolean {
+        if (!file.exists() || file.length() < 100_000_000) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-1")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(65536)
+            while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) } == MODEL_SHA1
+    }
+    @Synchronized fun ensure(context: Context, progress: (String) -> Unit): File {
         val model = File(context.filesDir, "ggml-base.bin")
-        if (model.exists() && model.length() > 100_000_000) return model
+        progress("Verificando modelo local…")
+        if (valid(model)) return model
         val partial = File(context.filesDir, "ggml-base.bin.part")
         try {
             progress("Baixando modelo gratuito (uma única vez)…")
@@ -30,7 +41,7 @@ object ModelManager {
                     }
                 } }
             } finally { conn.disconnect() }
-            if (partial.length() < 100_000_000) error("Modelo incompleto")
+            if (!valid(partial)) error("Modelo incompleto ou corrompido. Verifique a conexão e tente novamente.")
             if (!partial.renameTo(model)) error("Falha ao guardar modelo")
             return model
         } finally { partial.delete() }

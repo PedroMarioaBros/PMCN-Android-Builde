@@ -6,11 +6,11 @@ on:
       - 'projetos/transcritor-ptbr/**'
       - '.github/workflows/transcritor-ptbr.yml'
 permissions:
-  contents: read
-  issues: write
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: projetos/transcritor-ptbr
@@ -20,59 +20,62 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Verificar ambiente Android
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls -la /usr/local/lib/android/sdk/cmdline-tools/latest/bin/ || true
-      - name: Instalar SDK nativo Android
-        id: sdk
-        shell: bash
-        run: |
-          set -o pipefail
-          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018" 2>&1 | tee sdk-install.log
+      - name: Instalar SDK nativo
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018"'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Obter motor Whisper.cpp
-        id: whisper
-        shell: bash
+      - name: Obter Whisper fixado
         run: |
-          set -o pipefail
-          git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper 2>&1 | tee whisper-clone.log
-      - name: Compilar e registrar erros
-        id: compile
-        shell: bash
+          git clone https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper
+          git -C app/src/main/cpp/whisper checkout a8d002cfd879315632a579e73f0148d06959de36
+      - name: Preparar áudio sintético e modelo de teste
         run: |
-          set -o pipefail
-          gradle :app:assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
-      - name: Publicar diagnóstico automaticamente
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng ffmpeg
+          mkdir -p app/src/androidTest/assets
+          espeak-ng -v pt-br -s 135 -w /tmp/teste.wav 'Olá. Este é um teste de transcrição de voz em texto. Estamos falando em português. O aplicativo funciona sem internet.'
+          ffmpeg -y -i /tmp/teste.wav -ar 48000 -c:a libopus app/src/androidTest/assets/teste.opus
+          curl -L --fail --retry 3 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin' -o /tmp/ggml-base.bin
+          echo '465707469ff3a37a2b9b8d8f89f2f99de7299dac  /tmp/ggml-base.bin' | sha1sum -c -
+      - name: Compilar APK e testes
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon > build.log 2>&1 || { tail -150 build.log; exit 1; }
+      - name: Validar assinatura e motor
         run: |
-          {
-            echo "Falha de compilação do Voz em Texto."
-            echo
-            echo "Commit: ${{ github.sha }}"
-            echo "Execução: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo
-            echo '~~~'
-            for file in sdk-install.log whisper-clone.log build.log; do
-              if [ -f "$file" ]; then
-                echo "===== $file ====="
-                tail -n 140 "$file"
-              fi
-            done
-            echo "===== Etapas ====="
-            echo "SDK: ${{ steps.sdk.outcome }}"
-            echo "Whisper: ${{ steps.whisper.outcome }}"
-            echo "Gradle: ${{ steps.compile.outcome }}"
-            echo '~~~'
-          } > build-failure.md
-          gh issue create --repo "${{ github.repository }}" --title "Diagnóstico automático APK ${{ github.run_number }}" --body-file build-failure.md
-
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libvozemtexto.so'
+          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-0.3.0.apk
+          sha256sum Voz-em-Texto-0.3.0.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: transcritor-ptbr-debug
-          path: projetos/transcritor-ptbr/app/build/outputs/apk/debug/*.apk
+          name: Voz-em-Texto-APK
+          path: |
+            projetos/transcritor-ptbr/Voz-em-Texto-0.3.0.apk
+            projetos/transcritor-ptbr/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Habilitar KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Testar Android 13 offline
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: bash projetos/transcritor-ptbr/ci-test.sh
+      - name: Publicar APK testado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "voz-em-texto-0.3.0-${{ github.run_number }}" Voz-em-Texto-0.3.0.apk SHA256SUMS.txt --repo '${{ github.repository }}' --target '${{ github.sha }}' --title 'Voz em Texto 0.3.0' --notes 'APK de teste assinado. Whisper Base local, português, seleção e compartilhamento de áudio. Compilação e teste de transcrição OGG/Opus em emulador Android 13. Ainda não testado em Moto G52 físico.'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnostico-voz-em-texto
+          path: |
+            projetos/transcritor-ptbr/build.log
+            projetos/transcritor-ptbr/test-result.txt
+            projetos/transcritor-ptbr/logcat.txt

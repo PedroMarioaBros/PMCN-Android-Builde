@@ -11,7 +11,9 @@ import android.media.AudioFormat
 import kotlin.math.max
 
 object AudioDecoder {
-    fun decode(context: Context, uri: Uri): FloatArray {
+    fun decode(context: Context, uri: Uri): File {
+        val pcm = File.createTempFile("decoded_", ".pcm", context.cacheDir)
+        var success = false
         val input = File.createTempFile("shared_audio_", ".bin", context.cacheDir)
         try {
             context.contentResolver.openInputStream(uri)?.use { source ->
@@ -32,14 +34,18 @@ object AudioDecoder {
                     codec.start()
                     var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                    val mono = ArrayList<Float>()
+                    val sink = pcm.outputStream().buffered()
+                    var sourceIndex = 0L
+                    var nextPosition = 0.0
+                    var previous = 0f
+                    var written = 0L
                     var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
                     val info = MediaCodec.BufferInfo()
                     var inputDone = false
                     var outputDone = false
-                    var loops = 0
-                    while (!outputDone) {
-                        if (++loops > 100000) error("Tempo limite ao decodificar áudio")
+                    var lastOutput = android.os.SystemClock.elapsedRealtime()
+                    try { while (!outputDone) {
+                        if (android.os.SystemClock.elapsedRealtime() - lastOutput > 30000) error("Tempo limite ao decodificar áudio")
                         if (!inputDone) {
                             val index = codec.dequeueInputBuffer(10000)
                             if (index >= 0) {
@@ -63,6 +69,7 @@ object AudioDecoder {
                             if (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_FLOAT) error("PCM não suportado: $encoding")
                             pcmEncoding = encoding
                         } else if (index >= 0) {
+                            lastOutput = android.os.SystemClock.elapsedRealtime()
                             val output = codec.getOutputBuffer(index)!!
                             output.position(info.offset)
                             output.limit(info.offset + info.size)
@@ -77,22 +84,31 @@ object AudioDecoder {
                             for (i in frame.indices step max(1,channels)) {
                                 var sum = 0f
                                 for (c in 0 until channels) if (i+c < frame.size) sum += frame[i+c]
-                                mono.add(sum/channels)
+                                val current = sum / channels
+                                if (sourceIndex == 0L) previous = current
+                                while (nextPosition <= sourceIndex.toDouble()) {
+                                    val fraction = (nextPosition - (sourceIndex - 1)).coerceIn(0.0, 1.0)
+                                    val value = (previous * (1.0 - fraction) + current * fraction).toFloat()
+                                    val bits = java.lang.Float.floatToIntBits(value)
+                                    sink.write(bits and 255); sink.write((bits ushr 8) and 255)
+                                    sink.write((bits ushr 16) and 255); sink.write((bits ushr 24) and 255)
+                                    nextPosition += sampleRate.toDouble() / 16000.0
+                                    written++
+                                    if (written > 16000L * 60 * 180) error("O limite por arquivo é de 3 horas. Divida este áudio em partes menores.")
+                                }
+                                previous = current
+                                sourceIndex++
                             }
                             codec.releaseOutputBuffer(index,false)
                             if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
                         }
                     }
-                    if (mono.isEmpty()) error("Áudio vazio")
-                    val count = (mono.size.toLong() * 16000 / sampleRate).toInt()
-                    return FloatArray(count) { i ->
-                        val pos = i.toDouble() * sampleRate / 16000.0
-                        val left = pos.toInt().coerceIn(0,mono.lastIndex)
-                        val right = (left+1).coerceAtMost(mono.lastIndex)
-                        (mono[left].toDouble() * (1.0-(pos-left)) + mono[right].toDouble() * (pos-left)).toFloat()
-                    }
-                } finally { codec.stop(); codec.release() }
+                    } finally { sink.close() }
+                    if (written == 0L) error("Áudio vazio")
+                    success = true
+                    return pcm
+                } finally { try { codec.stop() } catch (_: Exception) {} ; codec.release() }
             } finally { extractor.release() }
-        } finally { input.delete() }
+        } finally { input.delete(); if (!success) pcm.delete() }
     }
 }
