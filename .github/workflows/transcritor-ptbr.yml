@@ -27,16 +27,16 @@ jobs:
       - name: Validar e preparar APK
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-Gemini-0.5.0.apk
-          sha256sum Voz-em-Texto-Gemini-0.5.0.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-Gemini-0.5.1.apk
+          sha256sum Voz-em-Texto-Gemini-0.5.1.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: Voz-em-Texto-Gemini-APK
           path: |
-            projetos/transcritor-ptbr/Voz-em-Texto-Gemini-0.5.0.apk
+            projetos/transcritor-ptbr/Voz-em-Texto-Gemini-0.5.1.apk
             projetos/transcritor-ptbr/SHA256SUMS.txt
       - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "voz-em-texto-gemini-0.5.0-${{ github.run_number }}" Voz-em-Texto-Gemini-0.5.0.apk SHA256SUMS.txt --repo "${{ github.repository }}" --target "${{ github.sha }}" --prerelease --title "Voz em Texto Gemini 0.5.0" --notes "Versão experimental com campo para inserir chave Gemini no aparelho. Requer conexão com a internet."
+          gh release create "voz-em-texto-gemini-0.5.1-${{ github.run_number }}" Voz-em-Texto-Gemini-0.5.1.apk SHA256SUMS.txt --repo "${{ github.repository }}" --target "${{ github.sha }}" --prerelease --title "Voz em Texto Gemini 0.5.1" --notes "Versão experimental com campo para inserir chave Gemini no aparelho. Requer conexão com a internet."
