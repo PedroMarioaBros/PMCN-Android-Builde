@@ -1,4 +1,4 @@
-name: Transcritor PT-BR APK
+name: Voz em Texto Gemini APK
 on:
   workflow_dispatch:
   push:
@@ -10,7 +10,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     defaults:
       run:
         working-directory: projetos/transcritor-ptbr
@@ -20,64 +19,24 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Instalar SDK nativo
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.2.12479018"'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Obter Whisper fixado
-        run: |
-          git clone https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper
-          git -C app/src/main/cpp/whisper checkout a8d002cfd879315632a579e73f0148d06959de36
-      - name: Preparar áudio sintético e modelo de teste
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y espeak-ng ffmpeg
-          mkdir -p app/src/androidTest/assets
-          espeak-ng -v pt-br -s 135 -w /tmp/teste.wav 'Olá. Este é um teste de transcrição de voz em texto. Estamos falando em português. O aplicativo funciona sem internet.'
-          ffmpeg -y -i /tmp/teste.wav -ar 48000 -c:a libopus app/src/androidTest/assets/teste.opus
-          curl -L --fail --retry 3 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin' -o /tmp/ggml-medium-q5_0.bin
-          echo '19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f  /tmp/ggml-medium-q5_0.bin' | sha256sum -c -
-      - name: Compilar APK e testes
-        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon > build.log 2>&1 || { grep -n -E "(^e:|error:|What went wrong|Execution failed)" build.log; tail -50 build.log; exit 1; }
-      - name: Validar assinatura e motor
+      - name: Build APK
+        run: gradle :app:assembleDebug --stacktrace --no-daemon
+      - name: Validar e preparar APK
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
-          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libvozemtexto.so'
-          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-0.4.0.apk
-          sha256sum Voz-em-Texto-0.4.0.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk Voz-em-Texto-Gemini-0.5.0.apk
+          sha256sum Voz-em-Texto-Gemini-0.5.0.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Voz-em-Texto-APK
+          name: Voz-em-Texto-Gemini-APK
           path: |
-            projetos/transcritor-ptbr/Voz-em-Texto-0.4.0.apk
+            projetos/transcritor-ptbr/Voz-em-Texto-Gemini-0.5.0.apk
             projetos/transcritor-ptbr/SHA256SUMS.txt
-          if-no-files-found: error
-      - name: Habilitar KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Testar Android 13 offline
-        id: emulator_test
-        continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          arch: x86_64
-          profile: pixel_2
-          disable-animations: true
-          script: bash projetos/transcritor-ptbr/ci-test.sh
-      - name: Publicar APK de teste com status transparente
+      - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "voz-em-texto-0.4.0-${{ github.run_number }}" Voz-em-Texto-0.4.0.apk SHA256SUMS.txt --repo '${{ github.repository }}' --target '${{ github.sha }}' --prerelease --title 'Voz em Texto 0.4.0 (teste)' --notes "APK assinado de teste com Whisper Medium Q5_0. Resultado do teste Android 13: ${{ steps.emulator_test.outcome }}. Não validado no Moto G52 físico; teste a transcrição antes de uso regular."
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: diagnostico-voz-em-texto
-          path: |
-            projetos/transcritor-ptbr/build.log
-            projetos/transcritor-ptbr/test-result.txt
-            projetos/transcritor-ptbr/logcat.txt
+          gh release create "voz-em-texto-gemini-0.5.0-${{ github.run_number }}" Voz-em-Texto-Gemini-0.5.0.apk SHA256SUMS.txt --repo "${{ github.repository }}" --target "${{ github.sha }}" --prerelease --title "Voz em Texto Gemini 0.5.0" --notes "Versão experimental com campo para inserir chave Gemini no aparelho. Requer conexão com a internet."
