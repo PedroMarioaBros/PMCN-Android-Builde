@@ -122,7 +122,7 @@ class MainActivity : Activity() {
                         ?.trim()?.takeIf { it.isNotEmpty() }?.let { i to it }
                 }
                 if (keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
-                val preferred = prefs.getStri                val model = "gemini-3.8-flash"
+                val model = "gemini-3.8-flash"
                 var text = ""
                 var succeeded = false
                 val failures = mutableListOf<String>()
