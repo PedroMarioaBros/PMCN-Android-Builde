@@ -1,0 +1,94 @@
+name: OpenXeChain Public Build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/openxechain-public-probe.yml"
+
+permissions:
+  contents: read
+
+env:
+  OPENXECHAIN_PREFIX: ${{ github.workspace }}/openxechain-sysroot
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang lld binutils cmake make ninja-build python3 python3-yaml \
+            bzip2 gzip grep findutils sed tar unzip zip gawk zlib1g-dev zstd wget
+
+      - name: Fetch pinned OpenXeChain tarballs
+        run: |
+          set -euo pipefail
+          SRC="${{ github.workspace }}/openxechain-src"
+          rm -rf "$SRC"
+          mkdir -p "$SRC"
+
+          fetch_tree() {
+            NAME="$1"
+            REPO="$2"
+            COMMIT="$3"
+            DEST="$4"
+            echo "FETCH_${NAME} ${COMMIT}"
+            mkdir -p "$DEST"
+            wget -q --tries=4 --timeout=60 \
+              "https://github.com/${REPO}/archive/${COMMIT}.tar.gz" \
+              -O "/tmp/${NAME}.tar.gz"
+            tar -xzf "/tmp/${NAME}.tar.gz" --strip-components=1 -C "$DEST"
+            rm -f "/tmp/${NAME}.tar.gz"
+          }
+
+          fetch_tree buildscript OpenXeChain/buildscript eed1fa65bf9577fd31625764b320a90182ea9ade "$SRC"
+          fetch_tree llvm OpenXeChain/llvm 890b83f6c8259a8899e182a5f7d9cf39c64131cc "$SRC/llvm"
+          fetch_tree newlib OpenXeChain/newlib f929633c27099d404e9cb5b2739a9c7f9b6afccc "$SRC/newlib"
+          fetch_tree synthxex OpenXeChain/synthxex 48d1453a55468aa2f8a211db0b20edd594ef5be3 "$SRC/synthxex"
+          fetch_tree xecorelib OpenXeChain/xecorelib c65d67e071357acade681f04c46ae9719797f239 "$SRC/xecorelib"
+
+      - name: Build OpenXeChain
+        run: |
+          mkdir -p "$OPENXECHAIN_PREFIX"
+          (
+            cd "${{ github.workspace }}/openxechain-src"
+            PREFIX="$OPENXECHAIN_PREFIX" PARALLEL=4 BUILD_TYPE=Release bash ./build-toolchain.sh
+          )
+
+      - name: Validate toolchain
+        run: |
+          test -x "$OPENXECHAIN_PREFIX/bin/clang"
+          test -x "$OPENXECHAIN_PREFIX/bin/lld-link"
+          test -x "$OPENXECHAIN_PREFIX/bin/synthxex"
+          "$OPENXECHAIN_PREFIX/bin/clang" --version
+          "$OPENXECHAIN_PREFIX/bin/synthxex" --version || true
+
+      - name: Package portable toolchain
+        run: |
+          tar -C "${{ github.workspace }}" -I 'zstd -T0 -6' -cf openxechain-sysroot.tar.zst openxechain-sysroot
+          sha256sum openxechain-sysroot.tar.zst | tee OPENXECHAIN-SHA256SUMS.txt
+          ls -lh openxechain-sysroot.tar.zst
+
+      - name: Upload OpenXeChain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openxechain-pinned-sysroot
+          path: |
+            openxechain-sysroot.tar.zst
+            OPENXECHAIN-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openxechain-build-debug
+          path: openxechain-src/build.log
+          if-no-files-found: ignore
+          retention-days: 7
