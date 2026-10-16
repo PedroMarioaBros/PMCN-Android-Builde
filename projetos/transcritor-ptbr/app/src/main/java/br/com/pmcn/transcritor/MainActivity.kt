@@ -148,6 +148,65 @@ class MainActivity : Activity() {
                     }
                 }
                 if (!succeeded) error("Não foi possível transcrever. Diagnóstico: " + failures.joinToString("; "))
+                runOnUiThread {
+                    result.text = text.ifBlank { "Nenhuma fala reconhecida." }
+                    result.tag = text.isNotBlank()
+                    status.text = "Processamento concluído"
+                }
+            } catch(e:Throwable) {
+                runOnUiThread {
+                    status.text="Falha ao processar áudio"
+                    result.text=e.message ?: "Não foi possível processar o áudio."
+                }
+            } finally {
+                runOnUiThread { busy=false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
+        }.start()
+    }
+    private fun showSettings() {
+        val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(12)) }
+        val fields=(1..3).map { i ->
+            panel.addView(label("CHAVE API GEMINI $i",12f,green,true))
+            val field=EditText(this).apply {
+                hint="Cole a chave da conta $i"; setSingleLine(true)
+                inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                setText(prefs.getString("gemini_key_$i",if(i==1) prefs.getString("gemini_key","") else ""))
+            }
+            panel.addView(field)
+            val feedback=label("Não testada",12f,Color.GRAY)
+            val test=Button(this).apply {
+                text="Testar chave $i"; isAllCaps=false
+                setOnClickListener {
+                    val key=field.text.toString().trim()
+                    if(key.isBlank()) { feedback.text="Informe uma chave primeiro"; return@setOnClickListener }
+                    feedback.text="Testando geração…"; isEnabled=false
+                    val button=this
+                    val model=prefs.getString("gemini_model","gemini-3.8-flash") ?: "gemini-3.8-flash"
+                    Thread {
+                        val message=try { checkGeminiKey(key,model) }
+                            catch(e:Exception) { "Falha de conexão: ${e.message.orEmpty().take(100)}" }
+                        runOnUiThread { feedback.text=message; button.isEnabled=true }
+                    }.start()
+                }
+            }
+            panel.addView(test); panel.addView(feedback)
+            field
+        }
+        panel.addView(label("MODELO GEMINI",12f,green,true))
+        val spinner=Spinner(this)
+        spinner.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,models)
+        spinner.setSelection(models.indexOf(prefs.getString("gemini_model","gemini-3.8-flash")).coerceAtLeast(0))
+        panel.addView(spinner)
+        panel.addView(label("Áudios são enviados ao Google. Os limites de uso da API devem ser respeitados.",12f,Color.GRAY))
+        val scroll=ScrollView(this).apply { addView(panel) }
+        android.app.AlertDialog.Builder(this).setTitle("Configurações").setView(scroll)
+            .setNegativeButton("Cancelar",null).setPositiveButton("Salvar") { _,_ ->
+                val editor=prefs.edit()
+                fields.forEachIndexed { i,field -> editor.putString("gemini_key_${i+1}",field.text.toString().trim()) }
+                editor.putString("gemini_model",spinner.selectedItem.toString()).apply()
+                Toast.makeText(this,"Configurações salvas",Toast.LENGTH_SHORT).show()
+            }.show()
+    }
     private fun checkGeminiKey(key:String,model:String):String {
         val conn=URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
         try {
@@ -169,4 +228,30 @@ class MainActivity : Activity() {
             }
         } finally { conn.disconnect() }
     }
-
+    private fun transcribeGemini(uri:Uri,key:String,model:String):String {
+        val bytes=contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não foi possível ler o áudio.")
+        if(bytes.size>18_000_000) error("Áudio acima do limite de envio direto (18 MB).")
+        val mime=contentResolver.getType(uri)?.takeIf { it.startsWith("audio/") } ?: "audio/ogg"
+        val parts=org.json.JSONArray().put(JSONObject().put("text","Transcreva integralmente este áudio em português brasileiro. Responda somente com a transcrição, com pontuação natural. Não resuma, não traduza e não invente palavras. Para trechos impossíveis de compreender, use [inaudível]."))
+            .put(JSONObject().put("inline_data",JSONObject().put("mime_type",mime).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP))))
+        val payload=JSONObject().put("contents",org.json.JSONArray().put(JSONObject().put("parts",parts)))
+        val conn=URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod="POST"; conn.connectTimeout=20000; conn.readTimeout=120000; conn.doOutput=true
+            conn.setRequestProperty("Content-Type","application/json"); conn.setRequestProperty("x-goog-api-key",key)
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            val code=conn.responseCode
+            val response=(if(code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            if(code !in 200..299) error("Gemini HTTP $code: "+JSONObject(response).optJSONObject("error")?.optString("message").orEmpty().take(240))
+            val returned=JSONObject(response).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
+            return (0 until returned.length()).joinToString("\\n") { returned.getJSONObject(it).optString("text") }.trim()
+        } finally { conn.disconnect() }
+    }
+    private fun setAudio(uri:Uri?) {
+        if(busy) { Toast.makeText(this,"Aguarde a transcrição atual terminar.",Toast.LENGTH_SHORT).show(); return }
+        audio=uri
+        if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
+        try { contentResolver.openInputStream(uri)?.use { }; status.text="Áudio pronto para processar" }
+        catch(e:Exception) { status.text="Não foi possível abrir o áudio: ${e.localizedMessage}" }
+    }
+}
