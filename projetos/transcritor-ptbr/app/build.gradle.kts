@@ -15,7 +15,7 @@ android {
         minSdk = 26
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         targetSdk = 28
-        versionCode = 8
-        versionName = "0.6.1"
+        versionCode = 9
+        versionName = "0.6.2"
     }
 }
