@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getPreferences(MODE_PRIVATE) }
     private val models = arrayOf("gemini-3.8-flash")
     @Volatile private var busy = false
+    private var selectedAccount = 1
     private val green = Color.rgb(23,107,85)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
@@ -74,6 +75,19 @@ class MainActivity : Activity() {
         result=label("Selecione ou compartilhe um áudio. A transcrição completa aparecerá aqui.",15f,Color.rgb(90,105,98))
         result.setTextIsSelectable(true)
         result.setPadding(0,dp(16),0,dp(16)); output.addView(result)
+        output.addView(label("CONTA PARA TRANSCRIÇÃO",12f,green,true))
+        val accountSpinner=Spinner(this)
+        accountSpinner.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,arrayOf("Conta 1","Conta 2","Conta 3"))
+        selectedAccount=prefs.getInt("selected_account",1).coerceIn(1,3)
+        accountSpinner.setSelection(selectedAccount-1)
+        accountSpinner.onItemSelectedListener=object:android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent:android.widget.AdapterView<*>?,view:android.view.View?,position:Int,id:Long) {
+                selectedAccount=position+1
+                prefs.edit().putInt("selected_account",selectedAccount).apply()
+            }
+            override fun onNothingSelected(parent:android.widget.AdapterView<*>?) {}
+        }
+        output.addView(accountSpinner)
         val transcribe = Button(this).apply {
             text = "Transcrever áudio"; isAllCaps = false
             setTextColor(Color.WHITE); background = rounded(green,14)
@@ -117,31 +131,28 @@ class MainActivity : Activity() {
         result.text = "Preparando transcrição…"
         Thread {
             try {
-                val keys = (1..3).mapNotNull { i ->
-                    prefs.getString("gemini_key_$i", if (i==1) prefs.getString("gemini_key","") else "")
-                        ?.trim()?.takeIf { it.isNotEmpty() }?.let { i to it }
-                }
-                if (keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
-                val model = "gemini-3.8-flash"
-                var text = ""
-                var succeeded = false
-                val failures = mutableListOf<String>()
-                for ((index,entry) in keys.withIndex()) {
-                    val (slot,key) = entry
-                    runOnUiThread { status.text = "Transcrevendo: conta $slot (${index+1}/${keys.size})" }
+                val slot=selectedAccount
+                val key=prefs.getString("gemini_key_$slot",if(slot==1) prefs.getString("gemini_key","") else "")?.trim().orEmpty()
+                if(key.isEmpty()) error("Cadastre a chave da Conta $slot em Configurações.")
+                val model="gemini-3.8-flash"
+                var text=""
+                var succeeded=false
+                val failures=mutableListOf<String>()
+                for(attempt in 1..5) {
+                    runOnUiThread { status.text="Conta $slot • tentativa $attempt/5" }
                     try {
-                        text = transcribeGemini(selected,key,model)
-                        succeeded = true
+                        text=transcribeGemini(selected,key,model)
+                        succeeded=true
                         break
-                    } catch (e: Exception) {
+                    } catch(e:Exception) {
                         val message=e.message.orEmpty()
                         val code=Regex("HTTP (\\d{3})").find(message)?.groupValues?.get(1) ?: "conexão"
-                        failures.add("Conta $slot: $code - ${message.take(130)}")
-                        if (code == "429") break
-                        if (code !in listOf("401","403","500","502","503","504","conexão")) break
+                        failures.add("Tentativa $attempt: $code - ${message.take(150)}")
+                        if(code !in listOf("500","502","503","504","conexão") || attempt==5) break
+                        Thread.sleep((attempt*1500L).coerceAtMost(6000L))
                     }
                 }
-                if (!succeeded) error("Não foi possível transcrever. Diagnóstico: " + failures.joinToString("; "))
+                if(!succeeded) error("Conta $slot: "+failures.joinToString("; "))
                 runOnUiThread {
                     result.text = text.ifBlank { "Nenhuma fala reconhecida." }
                     result.tag = text.isNotBlank()
