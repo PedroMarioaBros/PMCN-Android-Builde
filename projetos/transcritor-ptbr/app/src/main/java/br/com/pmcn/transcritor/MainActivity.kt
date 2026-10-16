@@ -124,7 +124,19 @@ class MainActivity : Activity() {
                 val key = apiKey.text.toString().trim()
                 if (key.isBlank()) error("Informe sua chave API Gemini antes de transcrever.")
                 runOnUiThread { status.text = "Enviando áudio ao Gemini…" }
-                val text = transcribeGemini(selected,key,modelName.text.toString().trim())
+                var text = ""
+                for (attempt in 1..4) {
+                    try {
+                        text = transcribeGemini(selected,key,modelName.text.toString().trim())
+                        break
+                    } catch (e: Exception) {
+                        val retryable = e.message?.contains("HTTP 503") == true || e.message?.contains("HTTP 429") == true || e.message?.contains("HTTP 502") == true
+                        if (!retryable || attempt == 4) throw e
+                        val waitMs = (attempt * attempt * 1500L)
+                        runOnUiThread { status.text = "Gemini ocupado. Nova tentativa ${attempt + 1} de 4…" }
+                        Thread.sleep(waitMs)
+                    }
+                }
                 runOnUiThread {
                     result.text = text.ifBlank { "Nenhuma fala reconhecida." }
                     result.tag = text.isNotBlank() && !text.startsWith("ERRO:")
@@ -133,7 +145,7 @@ class MainActivity : Activity() {
             } catch (e:Throwable) {
                 runOnUiThread {
                     status.text = "Falha ao processar áudio"
-                    result.text = if (e.message?.contains("HTTP 404") == true) "Modelo Gemini indisponível. Verifique a versão do aplicativo ou tente outro modelo." else if (e.message?.contains("HTTP 429") == true) "Limite de uso da API atingido. Tente novamente mais tarde." else if (e.message?.contains("HTTP 403") == true || e.message?.contains("HTTP 401") == true) "A chave API não tem autorização para esta solicitação. Confira a chave e as permissões." else if (e is OutOfMemoryError) "Memória insuficiente. Feche outros aplicativos e tente novamente com um áudio menor." else e.message ?: "Não foi possível processar este arquivo."
+                    result.text = if (e.message?.contains("HTTP 503") == true || e.message?.contains("HTTP 502") == true) "O Gemini está temporariamente sobrecarregado. Foram realizadas novas tentativas. Aguarde um pouco e tente novamente." else if (e.message?.contains("HTTP 404") == true) "Modelo Gemini indisponível. Verifique a versão do aplicativo ou tente outro modelo." else if (e.message?.contains("HTTP 429") == true) "Limite de uso da API atingido. Tente novamente mais tarde." else if (e.message?.contains("HTTP 403") == true || e.message?.contains("HTTP 401") == true) "A chave API não tem autorização para esta solicitação. Confira a chave e as permissões." else if (e is OutOfMemoryError) "Memória insuficiente. Feche outros aplicativos e tente novamente com um áudio menor." else e.message ?: "Não foi possível processar este arquivo."
                 }
             } finally { runOnUiThread { busy = false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } }
         }.start()
