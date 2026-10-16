@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getPreferences(MODE_PRIVATE) }
     private val models = arrayOf("gemini-3.8-flash")
     @Volatile private var busy = false
+    @Volatile private var cancelRequested = false
     private var selectedAccount = 1
     private val green = Color.rgb(23,107,85)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -94,6 +95,11 @@ class MainActivity : Activity() {
             setOnClickListener { processAudio() }
         }
         output.addView(transcribe,LinearLayout.LayoutParams(-1,dp(52)))
+        val cancel=Button(this).apply {
+            text="Cancelar transcrição"; isAllCaps=false
+            setOnClickListener { cancelRequested=true; status.text="Cancelando…" }
+        }
+        output.addView(cancel)
         val copy=Button(this).apply { text="Copiar texto"; isAllCaps=false
             setOnClickListener {
                 if (result.tag != true) { Toast.makeText(this@MainActivity,"Ainda não há transcrição para copiar.",Toast.LENGTH_SHORT).show(); return@setOnClickListener }
@@ -129,34 +135,68 @@ class MainActivity : Activity() {
         busy = true
         result.tag = false
         result.text = "Preparando transcrição…"
+        cancelRequested=false
         Thread {
             try {
-                val slot=selectedAccount
-                val key=prefs.getString("gemini_key_$slot",if(slot==1) prefs.getString("gemini_key","") else "")?.trim().orEmpty()
-                if(key.isEmpty()) error("Cadastre a chave da Conta $slot em Configurações.")
+                val keys=(1..3).mapNotNull { slot ->
+                    val key=prefs.getString("gemini_key_$slot",if(slot==1) prefs.getString("gemini_key","") else "")?.trim().orEmpty()
+                    if(key.isEmpty()) null else slot to key
+                }
+                if(keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
                 val model="gemini-3.8-flash"
-                var text=""
-                var succeeded=false
-                val failures=mutableListOf<String>()
-                for(attempt in 1..5) {
-                    runOnUiThread { status.text="Conta $slot • tentativa $attempt/5" }
-                    try {
-                        text=transcribeGemini(selected,key,model)
-                        succeeded=true
-                        break
-                    } catch(e:Exception) {
-                        val message=e.message.orEmpty()
-                        val code=Regex("HTTP (\\d{3})").find(message)?.groupValues?.get(1) ?: "conexão"
-                        failures.add("Tentativa $attempt: $code - ${message.take(150)}")
-                        if(code !in listOf("500","502","503","504","conexão") || attempt==5) break
-                        Thread.sleep((attempt*1500L).coerceAtMost(6000L))
+                var transcription:String?=null
+                val history=mutableListOf<String>()
+                var round=0
+                val cooldown=mutableMapOf<Int,Long>()
+                while(!cancelRequested && transcription==null) {
+                    round++
+                    var attempted=false
+                    for((slot,key) in keys) {
+                        if(cancelRequested || transcription!=null) break
+                        if(System.currentTimeMillis() < (cooldown[slot] ?: 0L)) continue
+                        for(attempt in 1..5) {
+                            if(cancelRequested) break
+                            attempted=true
+                            runOnUiThread { status.text="Rodada $round • conta $slot • tentativa $attempt/5" }
+                            try {
+                                transcription=transcribeGemini(selected,key,model)
+                                break
+                            } catch(e:Exception) {
+                                val msg=e.message.orEmpty()
+                                val code=Regex("HTTP (\\d{3})").find(msg)?.groupValues?.get(1) ?: "conexão"
+                                history.add("Conta $slot, tentativa $attempt: $code")
+                                if(history.size>30) history.removeAt(0)
+                                if(code=="429") {
+                                    cooldown[slot]=System.currentTimeMillis()+60000L
+                                    break
+                                }
+                                if(code in listOf("400","401","403","404","413")) {
+                                    cooldown[slot]=System.currentTimeMillis()+300000L
+                                    break
+                                }
+                                if(attempt<5) Thread.sleep((attempt*2000L).coerceAtMost(10000L))
+                            }
+                        }
+                    }
+                    if(transcription!=null || cancelRequested) break
+                    val next=cooldown.values.filter { it>System.currentTimeMillis() }.minOrNull()
+                    val pause=if(!attempted && next!=null) (next-System.currentTimeMillis()).coerceIn(1000L,30000L) else 5000L
+                    runOnUiThread { status.text="Aguardando nova rodada • ${history.lastOrNull().orEmpty()}" }
+                    var elapsed=0L
+                    while(elapsed<pause && !cancelRequested) {
+                        Thread.sleep(500L)
+                        elapsed+=500L
                     }
                 }
-                if(!succeeded) error("Conta $slot: "+failures.joinToString("; "))
-                runOnUiThread {
-                    result.text = text.ifBlank { "Nenhuma fala reconhecida." }
-                    result.tag = text.isNotBlank()
-                    status.text = "Processamento concluído"
+                if(cancelRequested) {
+                    runOnUiThread { status.text="Transcrição cancelada"; result.text="Operação cancelada. "+history.joinToString("; ") }
+                } else {
+                    val text=transcription.orEmpty()
+                    runOnUiThread {
+                        result.text=text.ifBlank { "Nenhuma fala reconhecida." }
+                        result.tag=text.isNotBlank()
+                        status.text="Processamento concluído"
+                    }
                 }
             } catch(e:Throwable) {
                 runOnUiThread {
