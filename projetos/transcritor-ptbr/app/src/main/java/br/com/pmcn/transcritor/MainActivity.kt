@@ -20,6 +20,7 @@ class MainActivity : Activity() {
     private lateinit var result: TextView
     private var audio: Uri? = null
     private lateinit var apiKey: EditText
+    private lateinit var modelName: EditText
     @Volatile private var busy = false
     private val green = Color.rgb(23,107,85)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -54,7 +55,10 @@ class MainActivity : Activity() {
         settings.addView(label("CHAVE API GEMINI",12f,green,true))
         apiKey = EditText(this).apply { hint="Cole sua chave do Google AI Studio"; setSingleLine(true); inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(getPreferences(MODE_PRIVATE).getString("gemini_key","")) }
         settings.addView(apiKey)
-        settings.addView(Button(this).apply { text="Salvar chave neste aparelho"; isAllCaps=false; setOnClickListener { getPreferences(MODE_PRIVATE).edit().putString("gemini_key",apiKey.text.toString().trim()).apply(); Toast.makeText(this@MainActivity,"Chave salva",Toast.LENGTH_SHORT).show() } })
+        settings.addView(label("MODELO GEMINI",12f,green,true))
+        modelName = EditText(this).apply { setSingleLine(true); setText(getPreferences(MODE_PRIVATE).getString("gemini_model","gemini-3.8-flash")) }
+        settings.addView(modelName)
+        settings.addView(Button(this).apply { text="Salvar chave neste aparelho"; isAllCaps=false; setOnClickListener { getPreferences(MODE_PRIVATE).edit().putString("gemini_key",apiKey.text.toString().trim()).putString("gemini_model",modelName.text.toString().trim()).apply(); Toast.makeText(this@MainActivity,"Chave salva",Toast.LENGTH_SHORT).show() } })
         val card = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(22),dp(20),dp(22))
             background=rounded(Color.WHITE,20); elevation=dp(2).toFloat() }
         val params = LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(28) }
@@ -120,7 +124,7 @@ class MainActivity : Activity() {
                 val key = apiKey.text.toString().trim()
                 if (key.isBlank()) error("Informe sua chave API Gemini antes de transcrever.")
                 runOnUiThread { status.text = "Enviando áudio ao Gemini…" }
-                val text = transcribeGemini(selected,key)
+                val text = transcribeGemini(selected,key,modelName.text.toString().trim())
                 runOnUiThread {
                     result.text = text.ifBlank { "Nenhuma fala reconhecida." }
                     result.tag = text.isNotBlank() && !text.startsWith("ERRO:")
@@ -134,14 +138,14 @@ class MainActivity : Activity() {
             } finally { runOnUiThread { busy = false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } }
         }.start()
     }
-    private fun transcribeGemini(uri: Uri, key: String): String {
+    private fun transcribeGemini(uri: Uri, key: String, model: String): String {
         val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não foi possível ler o áudio.")
         if (bytes.size > 18_000_000) error("Áudio acima do limite de envio direto (18 MB).")
         val mime = contentResolver.getType(uri)?.takeIf { it.startsWith("audio/") } ?: "audio/ogg"
         val payload = JSONObject().put("contents",org.json.JSONArray().put(JSONObject().put("parts",org.json.JSONArray()
             .put(JSONObject().put("text","Transcreva integralmente este áudio em português brasileiro. Responda somente com a transcrição, com pontuação natural. Não resuma, não traduza e não invente palavras. Para trechos impossíveis de compreender, use [inaudível]."))
             .put(JSONObject().put("inline_data",JSONObject().put("mime_type",mime).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP)))))))
-        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection
+        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/${model.ifBlank { "gemini-3.8-flash" }}:generateContent").openConnection() as HttpURLConnection
         try {
             conn.requestMethod="POST"; conn.connectTimeout=20000; conn.readTimeout=120000; conn.doOutput=true
             conn.setRequestProperty("Content-Type","application/json"); conn.setRequestProperty("x-goog-api-key",key)
