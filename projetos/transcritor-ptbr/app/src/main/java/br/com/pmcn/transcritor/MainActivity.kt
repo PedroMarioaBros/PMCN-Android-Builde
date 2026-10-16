@@ -129,7 +129,7 @@ class MainActivity : Activity() {
             } catch (e:Throwable) {
                 runOnUiThread {
                     status.text = "Falha ao processar áudio"
-                    result.text = if (e is OutOfMemoryError) "Memória insuficiente. Feche outros aplicativos e tente novamente com um áudio menor." else e.message ?: "Não foi possível processar este arquivo."
+                    result.text = if (e.message?.contains("HTTP 404") == true) "Modelo Gemini indisponível. Verifique a versão do aplicativo ou tente outro modelo." else if (e.message?.contains("HTTP 429") == true) "Limite de uso da API atingido. Tente novamente mais tarde." else if (e.message?.contains("HTTP 403") == true || e.message?.contains("HTTP 401") == true) "A chave API não tem autorização para esta solicitação. Confira a chave e as permissões." else if (e is OutOfMemoryError) "Memória insuficiente. Feche outros aplicativos e tente novamente com um áudio menor." else e.message ?: "Não foi possível processar este arquivo."
                 }
             } finally { runOnUiThread { busy = false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } }
         }.start()
@@ -141,7 +141,7 @@ class MainActivity : Activity() {
         val payload = JSONObject().put("contents",org.json.JSONArray().put(JSONObject().put("parts",org.json.JSONArray()
             .put(JSONObject().put("text","Transcreva integralmente este áudio em português brasileiro. Responda somente com a transcrição, com pontuação natural. Não resuma, não traduza e não invente palavras. Para trechos impossíveis de compreender, use [inaudível]."))
             .put(JSONObject().put("inline_data",JSONObject().put("mime_type",mime).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP)))))))
-        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent").openConnection() as HttpURLConnection
+        val conn = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent").openConnection() as HttpURLConnection
         try {
             conn.requestMethod="POST"; conn.connectTimeout=20000; conn.readTimeout=120000; conn.doOutput=true
             conn.setRequestProperty("Content-Type","application/json"); conn.setRequestProperty("x-goog-api-key",key)
