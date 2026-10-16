@@ -122,131 +122,51 @@ class MainActivity : Activity() {
                         ?.trim()?.takeIf { it.isNotEmpty() }?.let { i to it }
                 }
                 if (keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
-                val model = prefs.getString("gemini_model","gemini-3.8-flash") ?: "gemini-3.8-flash"
+                val preferred = prefs.getString("gemini_model","gemini-3.8-flash") ?: "gemini-3.8-flash"
+                val candidateModels = listOf(preferred, "gemini-2.5-flash-lite", "gemini-2.5-flash").distinct()
                 var text = ""
-                var lastError: Exception? = null
-                // Uma rodada por credencial em falhas temporárias; não usar rodízio para contornar HTTP 429.
-                for ((index,entry) in keys.withIndex()) {
-                    val (slot,key) = entry
-                    runOnUiThread { status.text = "Transcrevendo com conta $slot (${index+1}/${keys.size})…" }
-                    try {
-                        text = transcribeGemini(selected,key,model)
-                        lastError = null
-                        break
-                    } catch (e: Exception) {
-                        lastError = e
-                        val message = e.message.orEmpty()
-                        val transient = message.contains("HTTP 502") || message.contains("HTTP 503") || message.contains("HTTP 504") || message.contains("HTTP 401") || message.contains("HTTP 403")
-                        if (!transient || index == keys.lastIndex) break
-                        Thread.sleep(1000L)
+                var succeeded = false
+                val failures = mutableListOf<String>()
+                // Cotas são por projeto/modelo. Não alternar contas para contornar HTTP 429.
+                modelLoop@ for (model in candidateModels) {
+                    for ((index,entry) in keys.withIndex()) {
+                        val (slot,key) = entry
+                        runOnUiThread { status.text = "Modelo $model • conta $slot (${index+1}/${keys.size})" }
+                        try {
+                            text = transcribeGemini(selected,key,model)
+                            succeeded = true
+                            break@modelLoop
+                        } catch (e: Exception) {
+                            val msg=e.message.orEmpty()
+                            val code=Regex("HTTP (\\d{3})").find(msg)?.groupValues?.get(1) ?: "conexão"
+                            failures.add("Conta $slot / $model: $code")
+                            // 429: passar a outro modelo, sem alternar credenciais para contornar a cota.
+                            if (code == "429" || code == "404") break
+                            // Falhas transitórias ou credencial inválida: outra credencial pode ser testada.
+                            if (code !in listOf("401","403","500","502","503","504")) break
+                        }
                     }
                 }
-                lastError?.let { throw it }
-                runOnUiThread {
-                    result.text=text.ifBlank { "Nenhuma fala reconhecida." }
-                    result.tag=text.isNotBlank()
-                    status.text="Processamento concluído"
-                }
-            } catch(e:Throwable) {
-                runOnUiThread {
-                    status.text="Falha ao processar áudio"
-                    val msg=e.message.orEmpty()
-                    result.text=when {
-                        msg.contains("HTTP 429") -> "Limite de uso da API atingido. Aguarde antes de tentar novamente."
-                        msg.contains("HTTP 502") || msg.contains("HTTP 503") || msg.contains("HTTP 504") -> "Gemini temporariamente sobrecarregado. Tente novamente mais tarde."
-                        msg.contains("HTTP 404") -> "Modelo indisponível. Escolha outro em Configurações."
-                        msg.contains("HTTP 401") || msg.contains("HTTP 403") -> "Chave inválida ou sem permissão. Teste suas chaves em Configurações."
-                        else -> e.message ?: "Não foi possível processar o áudio."
-                    }
-                }
-            } finally { runOnUiThread { busy=false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) } }
-        }.start()
-    }
-    private fun showSettings() {
-        val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(12)) }
-        val fields=(1..3).map { i ->
-            panel.addView(label("CHAVE API GEMINI $i",12f,green,true))
-            val field=EditText(this).apply {
-                hint="Cole a chave da conta $i"; setSingleLine(true)
-                inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                setText(prefs.getString("gemini_key_$i",if(i==1) prefs.getString("gemini_key","") else ""))
-            }
-            panel.addView(field)
-            val feedback=label("Não testada",12f,Color.GRAY)
-            val test=Button(this).apply {
-                text="Testar chave $i"; isAllCaps=false
-                setOnClickListener {
-                    val key=field.text.toString().trim()
-                    if(key.isBlank()) { feedback.text="Informe uma chave primeiro"; return@setOnClickListener }
-                    feedback.text="Testando conexão…"; isEnabled=false
-                    val button=this
-                    val model=models[spinnerIndexForTest()]
-                    Thread {
-                        val message=try { checkGeminiKey(key,model) }
-                            catch(e:Exception) { "Falha de conexão: ${e.message.orEmpty().take(100)}" }
-                        runOnUiThread { feedback.text=message; button.isEnabled=true }
-                    }.start()
-                }
-            }
-            panel.addView(test); panel.addView(feedback)
-            field
-        }
-        panel.addView(label("MODELO GEMINI",12f,green,true))
-        val spinner=Spinner(this)
-        spinner.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,models)
-        spinner.setSelection(models.indexOf(prefs.getString("gemini_model","gemini-3.8-flash")).coerceAtLeast(0))
-        panel.addView(spinner)
-        panel.addView(label("Áudios são enviados ao Google. Respeite os limites de uso da API.",12f,Color.GRAY))
-        val scroll=ScrollView(this).apply { addView(panel) }
-        android.app.AlertDialog.Builder(this).setTitle("Configurações").setView(scroll)
-            .setNegativeButton("Cancelar",null).setPositiveButton("Salvar") { _,_ ->
-                val editor=prefs.edit()
-                fields.forEachIndexed { i,field -> editor.putString("gemini_key_${i+1}",field.text.toString().trim()) }
-                editor.putString("gemini_model",spinner.selectedItem.toString()).apply()
-                Toast.makeText(this,"Configurações salvas",Toast.LENGTH_SHORT).show()
-            }.show()
-    }
-    private fun spinnerIndexForTest(): Int = models.indexOf(prefs.getString("gemini_model","gemini-3.8-flash")).coerceAtLeast(0)
+                if (!succeeded) error("Não foi possível transcrever. Diagnóstico: " + failures.joinToString("; "))
     private fun checkGeminiKey(key:String,model:String):String {
-        val conn=URL("https://generativelanguage.googleapis.com/v1beta/models/$model").openConnection() as HttpURLConnection
-        try {
-            conn.connectTimeout=15000; conn.readTimeout=15000
-            conn.setRequestProperty("x-goog-api-key",key)
-            val code=conn.responseCode
-            return when(code) {
-                200 -> "Chave aceita e modelo encontrado (áudio não testado)."
-                401,403 -> "Chave inválida ou sem permissão (HTTP $code)."
-                404 -> "Modelo indisponível (HTTP 404)."
-                429 -> "Limite de uso atingido (HTTP 429)."
-                500,502,503,504 -> "Google temporariamente indisponível (HTTP $code)."
-                else -> "Resposta HTTP $code. Confira chave e modelo."
-            }
-        } finally { conn.disconnect() }
-    }
-    private fun transcribeGemini(uri:Uri,key:String,model:String):String {
-        val bytes=contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não foi possível ler o áudio.")
-        if(bytes.size>18_000_000) error("Áudio acima do limite de envio direto (18 MB).")
-        val mime=contentResolver.getType(uri)?.takeIf { it.startsWith("audio/") } ?: "audio/ogg"
-        val parts=org.json.JSONArray().put(JSONObject().put("text","Transcreva integralmente este áudio em português brasileiro. Responda somente com a transcrição, com pontuação natural. Não resuma, não traduza e não invente palavras. Para trechos impossíveis de compreender, use [inaudível]."))
-            .put(JSONObject().put("inline_data",JSONObject().put("mime_type",mime).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP))))
-        val payload=JSONObject().put("contents",org.json.JSONArray().put(JSONObject().put("parts",parts)))
         val conn=URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
         try {
-            conn.requestMethod="POST"; conn.connectTimeout=20000; conn.readTimeout=120000; conn.doOutput=true
-            conn.setRequestProperty("Content-Type","application/json"); conn.setRequestProperty("x-goog-api-key",key)
+            conn.requestMethod="POST"; conn.connectTimeout=15000; conn.readTimeout=30000; conn.doOutput=true
+            conn.setRequestProperty("Content-Type","application/json")
+            conn.setRequestProperty("x-goog-api-key",key)
+            val payload=JSONObject().put("contents",org.json.JSONArray().put(
+                JSONObject().put("parts",org.json.JSONArray().put(JSONObject().put("text","Responda apenas OK.")))))
             conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             val code=conn.responseCode
-            val response=(if(code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
-            if(code !in 200..299) error("Gemini HTTP $code: "+JSONObject(response).optJSONObject("error")?.optString("message").orEmpty().take(240))
-            val returned=JSONObject(response).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
-            return (0 until returned.length()).joinToString("\\n") { returned.getJSONObject(it).optString("text") }.trim()
+            return when(code) {
+                200 -> "Teste real aprovado: chave e geração de texto funcionando (áudio não testado)."
+                400 -> "Requisição rejeitada (HTTP 400)."
+                401,403 -> "Chave inválida ou sem permissão (HTTP $code)."
+                404 -> "Modelo indisponível (HTTP 404)."
+                429 -> "Chave reconhecida, mas geração limitada por cota (HTTP 429)."
+                500,502,503,504 -> "Serviço temporariamente indisponível (HTTP $code)."
+                else -> "Falha no teste: HTTP $code."
+            }
         } finally { conn.disconnect() }
     }
-    private fun setAudio(uri:Uri?) {
-        if(busy) { Toast.makeText(this,"Aguarde a transcrição atual terminar.",Toast.LENGTH_SHORT).show(); return }
-        audio=uri
-        if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
-        try { contentResolver.openInputStream(uri)?.use { }; status.text="Áudio pronto para processar" }
-        catch(e:Exception) { status.text="Não foi possível abrir o áudio: ${e.localizedMessage}" }
-    }
-}
+
