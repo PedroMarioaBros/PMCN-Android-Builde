@@ -97,7 +97,7 @@ class MainActivity : Activity() {
         output.addView(transcribe,LinearLayout.LayoutParams(-1,dp(52)))
         val cancel=Button(this).apply {
             text="Cancelar transcrição"; isAllCaps=false
-            setOnClickListener { cancelRequested=true; status.text="Cancelando…" }
+            setOnClickListener { cancelRequested=true; pending.clear(); status.text="Cancelando…" }
         }
         output.addView(cancel)
         val copy=Button(this).apply { text="Copiar texto"; isAllCaps=false
@@ -117,97 +117,168 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode,resultCode,data)
         if(requestCode==42 && resultCode==RESULT_OK) { setAudio(data?.data); if (audio != null) processAudio() }
     }
-    private fun receive(intent: Intent?) {
-        if(intent?.action != Intent.ACTION_SEND) return
-        @Suppress("DEPRECATION")
-        val uri: Uri? = if(Build.VERSION.SDK_INT>=33)
-            intent.getParcelableExtra(Intent.EXTRA_STREAM,Uri::class.java)
-        else intent.getParcelableExtra(Intent.EXTRA_STREAM)
-        setAudio(uri)
-        if (uri != null) processAudio()
+    // ---------- Fila de áudios + rodízio de chaves (0.7.0) ----------
+    private class AudioProblem(msg: String) : Exception(msg)
+    private class AllKeysBlocked(msg: String) : Exception(msg)
+    private val pending = java.util.concurrent.ConcurrentLinkedQueue<Uri>()
+    private val keyCooldown = mutableMapOf<Int, Long>()
+    private val keyStrikes = mutableMapOf<Int, Int>()
+
+    @Suppress("DEPRECATION")
+    private fun receive(received: Intent?) {
+        val intent = received ?: return
+        val uris = mutableListOf<Uri>()
+        when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val u: Uri? = if (Build.VERSION.SDK_INT >= 33)
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                if (u != null) uris.add(u)
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val l: List<Uri>? = if (Build.VERSION.SDK_INT >= 33)
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                if (l != null) uris.addAll(l)
+            }
+            else -> return
+        }
+        if (uris.isEmpty()) return
+        enqueue(uris)
     }
+
+    private fun enqueue(uris: List<Uri>) {
+        uris.forEach { pending.add(it) }
+        if (busy) status.text = "Na fila: ${pending.size} áudio(s) aguardando"
+        else startQueue()
+    }
+
     private fun processAudio() {
         val selected = audio ?: run {
-            Toast.makeText(this,"Selecione um áudio primeiro",Toast.LENGTH_SHORT).show(); return
+            Toast.makeText(this, "Selecione um áudio primeiro", Toast.LENGTH_SHORT).show(); return
         }
+        audio = null
+        enqueue(listOf(selected))
+    }
+
+    private fun startQueue() {
         if (busy) return
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         busy = true
+        cancelRequested = false
         result.tag = false
         result.text = "Preparando transcrição…"
-        cancelRequested=false
         Thread {
+            val texts = mutableListOf<String>()
+            var halted = false
             try {
-                val keys=(1..3).mapNotNull { slot ->
-                    val key=prefs.getString("gemini_key_$slot",if(slot==1) prefs.getString("gemini_key","") else "")?.trim().orEmpty()
-                    if(key.isEmpty()) null else slot to key
+                val keys = (1..3).mapNotNull { slot ->
+                    val key = prefs.getString("gemini_key_$slot", if (slot == 1) prefs.getString("gemini_key", "") else "")?.trim().orEmpty()
+                    if (key.isEmpty()) null else slot to key
                 }
-                if(keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
-                val model="gemini-3.8-flash"
-                var transcription:String?=null
-                val history=mutableListOf<String>()
-                var round=0
-                val cooldown=mutableMapOf<Int,Long>()
-                while(!cancelRequested && transcription==null) {
-                    round++
-                    var attempted=false
-                    for((slot,key) in keys) {
-                        if(cancelRequested || transcription!=null) break
-                        if(System.currentTimeMillis() < (cooldown[slot] ?: 0L)) continue
-                        for(attempt in 1..5) {
-                            if(cancelRequested) break
-                            attempted=true
-                            runOnUiThread { status.text="Rodada $round • conta $slot • tentativa $attempt/5" }
-                            try {
-                                transcription=transcribeGemini(selected,key,model)
-                                break
-                            } catch(e:Exception) {
-                                val msg=e.message.orEmpty()
-                                val code=Regex("HTTP (\\d{3})").find(msg)?.groupValues?.get(1) ?: "conexão"
-                                history.add("Conta $slot, tentativa $attempt: $code")
-                                if(history.size>30) history.removeAt(0)
-                                if(code=="429") {
-                                    cooldown[slot]=System.currentTimeMillis()+60000L
-                                    break
-                                }
-                                if(code in listOf("400","401","403","404","413")) {
-                                    cooldown[slot]=System.currentTimeMillis()+300000L
-                                    break
-                                }
-                                if(attempt<5) Thread.sleep((attempt*2000L).coerceAtMost(10000L))
-                            }
-                        }
+                if (keys.isEmpty()) error("Cadastre ao menos uma chave em Configurações.")
+                val model = prefs.getString("gemini_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
+                var index = 0
+                while (!cancelRequested) {
+                    val uri = pending.poll() ?: break
+                    index++
+                    val tag = "Áudio $index/${index + pending.size}"
+                    try {
+                        val t = transcribeWithRotation(uri, keys, model, tag) ?: break
+                        texts.add(t.ifBlank { "[nenhuma fala reconhecida]" })
+                    } catch (e: AudioProblem) {
+                        texts.add("[ERRO: ${e.message}]")
                     }
-                    if(transcription!=null || cancelRequested) break
-                    val next=cooldown.values.filter { it>System.currentTimeMillis() }.minOrNull()
-                    val pause=if(!attempted && next!=null) (next-System.currentTimeMillis()).coerceIn(1000L,30000L) else 5000L
-                    runOnUiThread { status.text="Aguardando nova rodada • ${history.lastOrNull().orEmpty()}" }
-                    var elapsed=0L
-                    while(elapsed<pause && !cancelRequested) {
-                        Thread.sleep(500L)
-                        elapsed+=500L
-                    }
+                    val snapshot = joinTexts(texts)
+                    runOnUiThread { result.text = snapshot; result.tag = texts.any { !it.startsWith("[") } }
                 }
-                if(cancelRequested) {
-                    runOnUiThread { status.text="Transcrição cancelada"; result.text="Operação cancelada. "+history.joinToString("; ") }
+                if (cancelRequested) {
+                    pending.clear()
+                    runOnUiThread { status.text = "Transcrição cancelada" }
                 } else {
-                    val text=transcription.orEmpty()
-                    runOnUiThread {
-                        result.text=text.ifBlank { "Nenhuma fala reconhecida." }
-                        result.tag=text.isNotBlank()
-                        status.text="Processamento concluído"
-                    }
+                    runOnUiThread { status.text = "Processamento concluído" }
                 }
-            } catch(e:Throwable) {
+            } catch (e: AllKeysBlocked) {
+                halted = true
+                val msg = (e.message ?: "") + " Faltam ${pending.size} áudio(s) na fila; compartilhe de novo mais tarde."
                 runOnUiThread {
-                    status.text="Falha ao processar áudio"
-                    result.text=e.message ?: "Não foi possível processar o áudio."
+                    status.text = "Chaves sem cota no momento"
+                    result.text = joinTexts(texts) + (if (texts.isEmpty()) "" else "\n\n") + msg
+                }
+            } catch (e: Throwable) {
+                halted = true
+                runOnUiThread {
+                    status.text = "Falha ao processar áudio"
+                    result.text = e.message ?: "Não foi possível processar o áudio."
                 }
             } finally {
-                runOnUiThread { busy=false; window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+                runOnUiThread {
+                    busy = false
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    // áudio que chegou no instante em que a fila terminava
+                    if (!halted && !cancelRequested && pending.isNotEmpty()) startQueue()
+                }
             }
         }.start()
     }
+
+    private fun joinTexts(texts: List<String>): String =
+        if (texts.size == 1) texts[0]
+        else texts.mapIndexed { i, t -> "— Áudio ${i + 1} —\n$t" }.joinToString("\n\n")
+
+    // Tenta as chaves em rodízio. 429 => a chave descansa (1, 2, 4, 8, 15 min) e passa para a próxima.
+    // Devolve null se cancelado. Lança AudioProblem (problema só deste áudio) ou AllKeysBlocked.
+    private fun transcribeWithRotation(uri: Uri, keys: List<Pair<Int, String>>, model: String, tag: String): String? {
+        var round = 0
+        while (!cancelRequested) {
+            round++
+            var attempted = false
+            for ((slot, key) in keys) {
+                if (cancelRequested) return null
+                if (System.currentTimeMillis() < (keyCooldown[slot] ?: 0L)) continue
+                for (attempt in 1..3) {
+                    if (cancelRequested) return null
+                    attempted = true
+                    runOnUiThread { status.text = "$tag • conta $slot • tentativa $attempt/3" }
+                    try {
+                        val t = transcribeGemini(uri, key, model)
+                        keyStrikes[slot] = 0
+                        return t
+                    } catch (e: AudioProblem) {
+                        throw e
+                    } catch (e: Exception) {
+                        val code = Regex("HTTP (\\d{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: "conexão"
+                        if (code == "429") {
+                            val s = (keyStrikes[slot] ?: 0) + 1
+                            keyStrikes[slot] = s
+                            val wait = minOf(60_000L * (1L shl (s - 1).coerceAtMost(5)), 900_000L)
+                            keyCooldown[slot] = System.currentTimeMillis() + wait
+                            break
+                        } else if (code == "401" || code == "403") {
+                            keyCooldown[slot] = System.currentTimeMillis() + 1_800_000L
+                            break
+                        } else if (code == "400" || code == "404" || code == "413") {
+                            throw AudioProblem("O Gemini recusou este áudio (HTTP $code).")
+                        } else if (attempt < 3) {
+                            Thread.sleep(attempt * 2000L)
+                        }
+                    }
+                }
+            }
+            if (cancelRequested) return null
+            val now = System.currentTimeMillis()
+            val remaining = keys.map { (keyCooldown[it.first] ?: 0L) - now }
+            if (remaining.all { it > 600_000L })
+                throw AllKeysBlocked("Todas as chaves estão sem cota (ou inválidas) por vários minutos.")
+            val next = remaining.filter { it > 0 }.minOrNull()
+            val pause = if (!attempted && next != null) next.coerceIn(1000L, 30000L) else 5000L
+            runOnUiThread { status.text = "$tag • aguardando cota (rodada $round)" }
+            var elapsed = 0L
+            while (elapsed < pause && !cancelRequested) { Thread.sleep(500L); elapsed += 500L }
+        }
+        return null
+    }
+
     private fun showSettings() {
         val panel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(12)) }
         val fields=(1..3).map { i ->
@@ -274,8 +345,8 @@ class MainActivity : Activity() {
         } finally { conn.disconnect() }
     }
     private fun transcribeGemini(uri:Uri,key:String,model:String):String {
-        val bytes=contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não foi possível ler o áudio.")
-        if(bytes.size>18_000_000) error("Áudio acima do limite de envio direto (18 MB).")
+        val bytes=contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw AudioProblem("Não foi possível ler o áudio.")
+        if(bytes.size>18_000_000) throw AudioProblem("Áudio acima do limite de envio direto (18 MB).")
         val mime=contentResolver.getType(uri)?.takeIf { it.startsWith("audio/") } ?: "audio/ogg"
         val parts=org.json.JSONArray().put(JSONObject().put("text","Transcreva integralmente este áudio em português brasileiro. Responda somente com a transcrição, com pontuação natural. Não resuma, não traduza e não invente palavras. Para trechos impossíveis de compreender, use [inaudível]."))
             .put(JSONObject().put("inline_data",JSONObject().put("mime_type",mime).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP))))
@@ -293,7 +364,6 @@ class MainActivity : Activity() {
         } finally { conn.disconnect() }
     }
     private fun setAudio(uri:Uri?) {
-        if(busy) { Toast.makeText(this,"Aguarde a transcrição atual terminar.",Toast.LENGTH_SHORT).show(); return }
         audio=uri
         if(uri==null) { status.text="Nenhum arquivo de áudio recebido"; return }
         try { contentResolver.openInputStream(uri)?.use { }; status.text="Áudio pronto para processar" }
